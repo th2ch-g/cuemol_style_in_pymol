@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuemol-style-in-pymol"
+version = "0.1.0"
+description = "CueMol-inspired molecular geometry and interactive materials for PyMOL"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["numpy>=1.24", "scipy>=1.10", "PyOpenGL>=3.1.7,<4"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "Pillow>=9"]
+
+[project.urls]
+Repository = "https://github.com/th2ch-g/cuemol_style_in_pymol"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cuemol_style_in_pymol = ["shaders/*.vert", "shaders/*.frag"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+
+[tool.pixi.dependencies]
+python = "3.10.*"
+pymol-open-source = "==3.1.0"
+
+[tool.pixi.pypi-dependencies]
+cuemol-style-in-pymol = { path = ".", editable = true, extras = ["test"] }
+ruff = "*"
+
+[tool.pixi.tasks]
+test = "python -m pytest tests -q"
+check = "ruff check src tests"
+format = "ruff format src tests"
+
+[tool.pixi.feature.docs.pypi-dependencies]
+sphinx = ">=8.1,<8.2"
+
+[tool.pixi.feature.docs.tasks]
+docs-en = "sphinx-build -W --keep-going -b html -D language=en docs docs/_build/html"
+docs-ja = { cmd = "sphinx-build -W --keep-going -b html -D language=ja docs docs/_build/html/ja", depends-on = ["docs-en"] }
+docs = { depends-on = ["docs-ja"] }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+docs = { features = ["docs"], solve-group = "default" }
