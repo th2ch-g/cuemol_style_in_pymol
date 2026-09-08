@@ -41,7 +41,9 @@ help cuemol_style
 | 装飾材質 | `diff_metal`, `spec_metal`, `metallic_chrome`, `metallic_copper`, `stone35`, `wood31`, `wood14scl2` |
 | 輪郭線 | `outline`, `silhouette` |
 
-形状プリセットは表示形式を指定します。材質プリセットは `representation=auto` を使い、既存のsticks・spheres・surface・cartoon・ribbonを独自形状で引き継ぎます。linesまたはnonbondedだけの原子は、タンパク質リボン、核酸主鎖と塩基対ロッド、または球棒モデルになります。自動モードでは非表示原子を表示しません。マップ・ラベルなど未対応の表示はPyMOL標準のままです。
+形状プリセットは名前に対応する表示形式を選びます。材質・輪郭線プリセットで表示形式を省略した場合は `ribbon` を使い、元がPyMOLのcartoon表示でもヘリックスを螺旋状に描きます。例えば `cuemol_style toon1` はリボン、`cuemol_style cartoon` はヘリックスを円柱にする表示です。明示的な表示形式の指定は既定値を上書きします。
+
+材質・輪郭線スタイルに `representation=auto` を明示すると、既存のsticks・spheres・surface・cartoon・ribbonを独自形状で引き継ぎます。linesまたはnonbondedだけの原子は、タンパク質リボン、核酸主鎖と塩基対ロッド、または球棒モデルになります。この自動モードでは非表示原子を表示しません。マップ・ラベルなど未対応の表示はPyMOL標準のままです。
 
 表示形式は `ribbon`、`cartoon`、`tube`、`nucleic`、`ballstick`、`sticks`、`cpk`、`surface` で指定できます。`cartoon` はヘリックスを円柱にし、`ribbon` は骨格に沿います。品質は `low`、`medium`（既定）、`high` です。高品質ほど準備時間とメモリ使用量が増えます。
 
@@ -117,6 +119,8 @@ cuemol_style ray, filename=figure_ray.png, width=2400, height=1800
 - `tube`：半径0.35、自然3次スプライン軸。`nucleic`：P原子を基準点とし、半軸1.25・0.5の楕円主鎖と半径0.5の塩基対ロッドを使います。塩基対は互換性のある面内の水素結合接触から推定します。対の割り当てや修飾塩基への対応は、CueMolの残基トポロジーや塩基対情報と異なる場合があります。
 - `ballstick`：全原子の半径0.3、結合半径0.2。`sticks`：原子・結合とも半径0.2。結合色は中点で明確に切り替わります。`cpk`：H/C/N/O/S/Pの半径は1.2/1.7/1.55/1.52/1.8/1.8、その他の元素は1.7です。メッシュの分割数は本プラグインのquality設定に依存します。
 - `surface`：プローブ半径1.4オングストローム、上記と同じ元素半径を使う溶媒排除表面です。PyMOLの表面生成法はCueMolのEDTSurf/MeshMSと異なるため、三角形分割や細部は一致しません。
+
+隣接する二次構造の接続面を共有し、シートの直後に円柱ヘリックスが続く場合も矢印先端の細さを保ちます。元の座標と二次構造の割り当ては変更しません。
 
 スプラインの向き、鎖切断判定、断面間の接続、端面、表面と原子の対応付けには本プラグイン独自の実装を使います。既定寸法を合わせても、すべての分子表現が同一になるわけではありません。マップとラベルは既存のPyMOL標準表示を維持します。
 

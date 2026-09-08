@@ -348,3 +348,58 @@ def test_richardson_native_average_retains_paper_and_pigment():
     np.testing.assert_allclose(colors[0], [0.941, 0.925, 0.867])
     assert colors[2].mean() < colors[0].mean()
     assert colors[2, 2] > colors[2, 0]
+
+
+@pytest.mark.parametrize(
+    "style,representation",
+    [
+        ("ribbon", "ribbon"),
+        ("round_ribbon", "ribbon"),
+        ("fancy_ribbon", "ribbon"),
+        ("cartoon", "cartoon"),
+        ("round_cartoon", "cartoon"),
+    ],
+)
+def test_direct_sheet_helix_junction_has_a_shared_plane_and_narrow_tip(
+    monkeypatch, style, representation
+):
+    atoms, coords = [], []
+    for i in range(15):
+        theta = np.deg2rad(100 * (i - 5))
+        ca = (
+            np.array([2.3 - 3.7 * (5 - i), 0.0, 0.0])
+            if i < 5
+            else np.array([2.3 * np.cos(theta), 2.3 * np.sin(theta), 1.5 * (i - 5)])
+        )
+        for name, offset in (("CA", [0, 0, 0]), ("C", [1, 0, 0]), ("O", [1, 1, 0])):
+            atoms.append(atom(i, name=name, ss="S" if i < 5 else "H"))
+            coords.append(ca + offset)
+    sections = []
+    original = geometry.sweep
+
+    def capture(*args, **kwargs):
+        mesh = original(*args, **kwargs)
+        count = len(geometry.section(args[6], args[7])[0])
+        sections.append((mesh, count))
+        return mesh
+
+    monkeypatch.setattr(geometry, "sweep", capture)
+    geometry.polymer_mesh(
+        atoms,
+        np.asarray(coords),
+        geometry.atom_colors(atoms, "cuemol"),
+        presets.PROFILES[style],
+        representation,
+        "medium",
+    )
+    assert len(sections) == 2
+    sheet, sk = sections[0]
+    helix, hk = sections[1]
+    sheet_center = sheet.vertices[-sk - 1]
+    sheet_rim = sheet.vertices[-sk:]
+    helix_center = helix.vertices[-2 * (hk + 1)]
+    helix_normal = helix.normals[-2 * (hk + 1)]
+    np.testing.assert_allclose(sheet_center, helix_center, atol=1e-6)
+    np.testing.assert_allclose(sheet.normals[-sk - 1], -helix_normal, atol=1e-6)
+    assert np.max(np.abs((sheet_rim - helix_center) @ helix_normal)) < 1e-5
+    assert np.linalg.norm(sheet_rim - sheet_center, axis=1).max() < 0.5

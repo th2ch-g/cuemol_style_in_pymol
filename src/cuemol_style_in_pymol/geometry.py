@@ -90,8 +90,8 @@ def smoothing_operator(count, samples, rho=3.0):
     return basis(np.linspace(-1, 1, (count - 1) * samples + 1)) @ coefficients
 
 
-def frames(path, hints):
-    tangent = unit(np.gradient(path, axis=0))
+def frames(path, hints, tangent=None):
+    tangent = unit(np.gradient(path, axis=0) if tangent is None else tangent)
     side = hints - tangent * np.sum(hints * tangent, axis=1, keepdims=True)
     for i in range(len(side)):
         if np.linalg.norm(side[i]) < 1e-7:
@@ -115,10 +115,11 @@ def sweep(
     back=False,
     front=None,
     side_color=False,
+    frame=None,
 ):
     if len(path) < 2:
         return Mesh([], [], [], [], [])
-    side, up = frames(path, hints)
+    side, up = frames(path, hints) if frame is None else frame
     shape, sn = section(kind, detail)
     k = len(shape)
     width = np.broadcast_to(widths, (len(path),))
@@ -169,7 +170,7 @@ def sweep(
     for idx, sign in ((0, -1), (-1, 1)):
         rim = v[idx]
         start = len(vertices)
-        normal = unit(path[1] - path[0]) if idx == 0 else unit(path[-1] - path[-2])
+        normal = unit(np.cross(side[idx], up[idx]))
         vertices = np.vstack((vertices, path[idx], rim))
         normals = np.vstack((normals, np.tile(sign * normal, (k + 1, 1))))
         vertex_colors = np.vstack((vertex_colors, np.tile(colors[idx], (k + 1, 1))))
@@ -431,6 +432,8 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
                     shoulder = (1.2 if fancy else 1.4) * (1.6 if fancy else 1.8)
                     tip = coil if j < len(seq) - 1 else 0.025
                     width[region] = tip + (shoulder - tip) * (1 - t) ** gamma
+        sheet_width = width.copy()
+        sheet_thickness = thickness.copy()
         if representation == "cartoon":
             start = 0
             while start < len(seq):
@@ -482,6 +485,16 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
             kinds[:] = "ellipse"
         if representation == "cartoon":
             kinds[ss == "H"] = "ellipse"
+        # Use one frame at each shared boundary to keep adjoining sections
+        # in the same plane, including direct sheet-to-helix transitions.
+        tangent = np.gradient(path, axis=0)
+        if representation == "cartoon":
+            boundaries = np.r_[0, np.flatnonzero(ss[1:] != ss[:-1]) + 1, len(path) - 1]
+            for first, last in zip(boundaries[:-1], boundaries[1:]):
+                if ss[first] == "H" and last > first:
+                    tangent[first] = path[first + 1] - path[first]
+                    tangent[last] = path[last] - path[last - 1]
+        side, up = frames(path, hi, tangent)
         begin = 0
         while begin < len(path) - 1:
             end = begin + 1
@@ -493,6 +506,9 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
                 end += 1
             sl = slice(begin, end + 1)
             local_width, local_thickness = width[sl], thickness[sl]
+            if ss[begin] == "S":
+                # A neighboring cylinder must not widen the sheet arrow tip.
+                local_width, local_thickness = sheet_width[sl], sheet_thickness[sl]
             if representation == "cartoon" and ss[begin] not in ("H", "S"):
                 local_width = local_thickness = 0.2
             meshes.append(
@@ -508,6 +524,7 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
                     profile.back and kinds[begin] != "ellipse" and ss[begin] == "H",
                     front[sl] if front is not None else None,
                     side_color=fancy and ss[begin] == "S",
+                    frame=(side[sl], up[sl]),
                 )
             )
             begin = end

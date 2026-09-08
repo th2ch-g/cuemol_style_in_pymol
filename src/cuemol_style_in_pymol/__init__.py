@@ -4,7 +4,7 @@
 def cuemol_style(
     style="richardson",
     selection="all",
-    representation="auto",
+    representation=None,
     color="cuemol",
     quality="medium",
     name="cuemol",
@@ -44,7 +44,9 @@ def cuemol_style(
             wood31, wood14scl2. Use list to inspect profiles and active views.
         selection: molecular atoms to style {default: all}
         representation: auto, ribbon, cartoon, tube, nucleic, ballstick,
-            sticks, cpk, surface {default: auto; profile may select one}
+            sticks, cpk, surface {default: ribbon for material/outline styles;
+            geometry presets select their own representation}
+            auto inherits source layers for material/outline styles.
         color: cuemol, keep, chain, ss, rainbow, element {default: cuemol}
             cuemol follows CueMol GUI defaults: khaki helices, SteelBlue sheets,
             FloralWhite coils, yellow nucleic geometry, and DefaultCPKColoring
@@ -110,7 +112,7 @@ def cuemol_style(
         entry = manager.apply(
             style,
             str(selection),
-            str(representation),
+            None if representation is None else str(representation),
             str(color),
             str(quality),
             str(name),

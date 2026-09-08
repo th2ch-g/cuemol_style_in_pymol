@@ -126,7 +126,7 @@ def main():
                     if profile == "richardson_cpk"
                     else "sticks"
                     if profile == "sticks"
-                    else "auto"
+                    else None
                 )
                 cuemol_style(
                     style,

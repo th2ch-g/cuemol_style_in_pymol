@@ -62,12 +62,18 @@ Style names
 | Decorative materials | `diff_metal`, `spec_metal`, `metallic_chrome`, `metallic_copper`, `stone35`, `wood31`, `wood14scl2` |
 | Outlines | `outline`, `silhouette` |
 
-Geometry presets choose a representation. Material presets use
-`representation=auto`: existing sticks, spheres, surface, cartoon, and
-ribbon layers are retained as custom geometry. Atoms shown only as lines or
-nonbonded points become protein ribbons, nucleic backbones/base-pair rods, or
-ball-and-stick geometry. Hidden atoms stay hidden in this automatic mode.
-Maps, labels, and other unsupported layers remain native.
+Geometry presets choose their named representation. Material and outline
+presets default to `ribbon`, so helices remain spiral-shaped even when the
+source is shown with PyMOL's cartoon representation. For example,
+`cuemol_style toon1` uses ribbons; `cuemol_style cartoon` explicitly uses helix
+cylinders. An explicit representation always overrides the default.
+
+With a material or outline style, `representation=auto` retains existing
+sticks, spheres, surface, cartoon, and ribbon layers as custom geometry.
+Atoms shown only as lines or nonbonded points become protein ribbons, nucleic
+backbones/base-pair rods, or ball-and-stick geometry. Hidden atoms stay hidden
+in this explicit automatic mode. Maps, labels, and other unsupported layers
+remain native.
 
 Override the representation with `ribbon`, `cartoon`, `tube`,
 `nucleic`, `ballstick`, `sticks`, `cpk`, or `surface`. `cartoon`
@@ -236,6 +242,10 @@ These are source-level checks; no claim of pixel equality is made.
 - `surface`: solvent-excluded surface with a 1.4-angstrom probe and
   the same element radii. PyMOL's surface mesher differs from CueMol's
   EDTSurf/MeshMS implementation, so triangulation and fine details differ.
+
+Adjoining secondary-structure sections share a boundary plane; a sheet
+arrow keeps its narrow tip when followed directly by a helix cylinder.
+Source coordinates and secondary-structure assignments are unchanged.
 
 Spline frames, chain-break detection, section transitions, caps, and
 surface ownership use this plugin's implementation. Matching default

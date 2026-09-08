@@ -222,7 +222,7 @@ def headless_checks(cmd, output, style, report):
     cmd.show_as("lines", "ligand")
     cmd.hide("everything", "ligand and name CB")
     mixed = snapshot(cmd)
-    entry = style("toon1", quiet=1, _self=cmd)
+    entry = style("toon1", representation="auto", quiet=1, _self=cmd)
     assert set(entry.drawings) == {"peptide", "ligand"}
     assert entry.drawings["peptide"][0].pieces
     atoms = [a for p in entry.drawings["ligand"][0].pieces for a in p.atoms]

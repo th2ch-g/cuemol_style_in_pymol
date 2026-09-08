@@ -98,12 +98,14 @@ for _name in ("toon1", "toon2"):
     PROFILES[_name] = replace(PROFILES[_name], edges="edges", back=True)
 
 
-def resolve(style, representation="auto", edge="auto", edge_width=None):
+def resolve(style, representation=None, edge="auto", edge_width=None):
     if style not in PROFILES:
         raise ValueError(f"Unknown style {style!r}; use 'cuemol_style list'.")
+    p = PROFILES[style]
+    if representation is None:
+        representation = "ribbon" if p.representation == "auto" else p.representation
     if representation not in REPRESENTATIONS:
         raise ValueError(f"representation must be one of {REPRESENTATIONS}")
-    p = PROFILES[style]
     if representation != "auto":
         p = replace(p, representation=representation)
     if edge in ("thin", "normal", "thick"):
