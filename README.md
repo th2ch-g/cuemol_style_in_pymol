@@ -35,6 +35,82 @@ __init_plugin__()
 Importing the package alone does not apply a style or change PyMOL settings.
 mdtbx's `pymol_plugins` integration registers the command automatically.
 
+## Gallery
+
+All 26 styles, plus explicit sticks and Richardson CPK views. Every PNG is
+1200 x 900 at `quality=high`, with CueMol default colors and a white background.
+Protein views share the same camera and use
+[crambin, PDB 1CRN](https://www.rcsb.org/structure/1CRN). DNA uses PyMOL's
+`fnab` builder; atomic views use its tryptophan fragment.
+
+<table>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/ribbon.png" alt="ribbon" width="240"><br><code>ribbon</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/round_ribbon.png" alt="round_ribbon" width="240"><br><code>round_ribbon</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/fancy_ribbon.png" alt="fancy_ribbon" width="240"><br><code>fancy_ribbon</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/cartoon.png" alt="cartoon" width="240"><br><code>cartoon</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/round_cartoon.png" alt="round_cartoon" width="240"><br><code>round_cartoon</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/tube.png" alt="tube" width="240"><br><code>tube</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/nucleic.png" alt="nucleic" width="240"><br><code>nucleic</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/ballstick.png" alt="ballstick" width="240"><br><code>ballstick</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/sticks.png" alt="sticks" width="240"><br><code>default</code><br><code>representation=sticks</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/cpk.png" alt="cpk" width="240"><br><code>cpk</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/surface.png" alt="surface" width="240"><br><code>surface</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/richardson.png" alt="richardson" width="240"><br><code>richardson</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/richardson_cpk.png" alt="richardson_cpk" width="240"><br><code>richardson</code><br><code>representation=cpk</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/default.png" alt="default" width="240"><br><code>default</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/shadow.png" alt="shadow" width="240"><br><code>shadow</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/nolighting.png" alt="nolighting" width="240"><br><code>nolighting</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/matte.png" alt="matte" width="240"><br><code>matte</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/toon1.png" alt="toon1" width="240"><br><code>toon1</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/toon2.png" alt="toon2" width="240"><br><code>toon2</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/diff_metal.png" alt="diff_metal" width="240"><br><code>diff_metal</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/spec_metal.png" alt="spec_metal" width="240"><br><code>spec_metal</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/metallic_chrome.png" alt="metallic_chrome" width="240"><br><code>metallic_chrome</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/metallic_copper.png" alt="metallic_copper" width="240"><br><code>metallic_copper</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/stone35.png" alt="stone35" width="240"><br><code>stone35</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/wood31.png" alt="wood31" width="240"><br><code>wood31</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/wood14scl2.png" alt="wood14scl2" width="240"><br><code>wood14scl2</code></td>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/outline.png" alt="outline" width="240"><br><code>outline</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top"><img src="docs/gallery/silhouette.png" alt="silhouette" width="240"><br><code>silhouette</code></td>
+    <td width="33%"></td>
+    <td width="33%"></td>
+  </tr>
+</table>
+
+Run `cuemol_style <style>` for a named preset. The
+[full guide](docs/pymol_cuemol.md#representation-audit) records matched geometry
+dimensions, material coefficients, and remaining rendering differences.
+`toon1`/`toon2` and `diff_metal`/`spec_metal` each share CueMol's OpenGL lighting;
+their distinct POV-Ray finishes are not evaluated here.
+
+Regenerate the gallery in the repository's PyMOL Qt environment:
+
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python tests/render_gallery.py
+```
+
+The published PNGs are versioned for README display. Downloaded coordinates
+and temporary validation output stay in the ignored `.cache` directory.
+
 ## Use
 
 ```text
@@ -64,52 +140,15 @@ colored-pencil strokes, bright unmarked highlights, and dark contour lines.
 Standard ray, dedicated ray, and transparent CGO approximate the marks by their
 average tone; they cannot run the per-pixel pencil shader.
 
-See the [full guide](docs/pymol_cuemol.rst) for styles, states, selection,
+See the [full guide](docs/pymol_cuemol.md) for styles, states, selection,
 session restoration, memory limits, and rendering differences.
-
-## Gallery
-
-Actual PyMOL GPU PNGs at `quality=high`, with CueMol default colors and a white
-background. Protein views use [crambin, PDB 1CRN](https://www.rcsb.org/structure/1CRN).
-DNA uses PyMOL's `fnab` builder; atomic views use its tryptophan fragment.
-Run `cuemol_style <style>` for a geometry preset. Sticks use
-`cuemol_style default, representation=sticks`.
-
-| Ribbon | Round ribbon | Fancy ribbon |
-| --- | --- | --- |
-| ![Ribbon](docs/gallery/ribbon.png) | ![Round ribbon](docs/gallery/round_ribbon.png) | ![Fancy ribbon](docs/gallery/fancy_ribbon.png) |
-| `ribbon` | `round_ribbon` | `fancy_ribbon` |
-| ![Cartoon](docs/gallery/cartoon.png) | ![Round cartoon](docs/gallery/round_cartoon.png) | ![Tube](docs/gallery/tube.png) |
-| `cartoon` | `round_cartoon` | `tube` |
-| ![Nucleic](docs/gallery/nucleic.png) | ![Ball and stick](docs/gallery/ballstick.png) | ![Sticks](docs/gallery/sticks.png) |
-| `nucleic` | `ballstick` | `representation=sticks` |
-| ![CPK](docs/gallery/cpk.png) | ![Surface](docs/gallery/surface.png) | |
-| `cpk` | `surface` | |
-
-| Richardson ribbon | Richardson CPK |
-| --- | --- |
-| ![Richardson ribbon](docs/gallery/richardson.png) | ![Richardson CPK](docs/gallery/richardson_cpk.png) |
-| `cuemol_style richardson` | `cuemol_style richardson, representation=cpk` |
-
-The representation audit in the [full guide](docs/pymol_cuemol.rst) records the
-matched dimensions and remaining differences. This is an independent renderer;
-the images are not claimed to be pixel-identical to CueMol.
-
-Regenerate the gallery in the repository's PyMOL Qt environment:
-
-```sh
-uv run --no-project --python .pixi/envs/default/bin/python python tests/render_gallery.py
-```
-
-The published PNGs are versioned for README display. Downloaded coordinates and
-temporary validation output stay in the ignored `.cache` directory.
+The [Japanese guide](docs/ja/pymol_cuemol.md) covers the same interface.
 
 ## Develop and validate
 
 ```sh
 pixi run test
 pixi run check
-pixi run -e docs docs
 uv run --no-project --python .pixi/envs/default/bin/python python \
     tests/check_cuemol_style.py --gui --benchmark --output .cache/validation
 ```

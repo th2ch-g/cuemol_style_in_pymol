@@ -7,7 +7,7 @@ from importlib.resources import files
 
 import numpy as np
 
-from .materials import material_id
+from .materials import material_id, material_coefficients
 
 
 @dataclass
@@ -217,6 +217,10 @@ class Pool:
                     gl.glGetUniformLocation(program, "material"),
                     material_id(drawing.profile.material),
                 )
+                gl.glUniform4f(
+                    gl.glGetUniformLocation(program, "materialLighting"),
+                    *material_coefficients(drawing.profile.material),
+                )
             gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
             gl.glPolygonOffset(1.0, 1.0)
             for piece in drawing.pieces:
@@ -281,6 +285,10 @@ class Pool:
                 gl.glUniform1i(
                     gl.glGetUniformLocation(program, "material"),
                     material_id("nolighting"),
+                )
+                gl.glUniform4f(
+                    gl.glGetUniformLocation(program, "materialLighting"),
+                    *material_coefficients("nolighting"),
                 )
                 gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
                 gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)

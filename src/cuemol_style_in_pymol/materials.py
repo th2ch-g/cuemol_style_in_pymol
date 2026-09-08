@@ -3,7 +3,7 @@
 import numpy as np
 
 from .mesh import unit
-from .presets import MATERIALS
+from .presets import MATERIALS, OPENGL_MATERIALS
 
 
 def drawing_tone(normals):
@@ -33,7 +33,9 @@ def pencil_average(colors, tone):
     ink *= np.minimum(1, (paper @ luma) * 0.85 / np.maximum(ink @ luma, 1e-8))[:, None]
     result = np.tile(paper, (len(colors), 1))
     for threshold, strength in ((0.92, 1.0), (0.62, 0.74), (0.34, 0.38)):
-        coverage = 0.28 * np.clip((threshold - tone) * 10, 0, 1)
+        growth = np.clip((threshold - tone) * 10, 0, 1)
+        # Reference 3x ink integration: full-layer mean coverage is 0.256.
+        coverage = growth * (0.275 - 0.019 * growth)
         result *= 1 - coverage[:, None] * (1 - ink * strength)
     return np.clip(result, 0, 1)
 
@@ -42,26 +44,15 @@ def bake(mesh, material, rotation=None):
     """Approximate the GLSL material using view-space vertex samples."""
     rotation = np.eye(3) if rotation is None else np.asarray(rotation).reshape(3, 3)
     n = unit(mesh.normals @ rotation.T)
-    light = unit([0.35, 0.65, 1.0])
+    light = unit([1.0, 1.0, 1.5])
     diffuse = np.maximum(n @ light, 0)
     specular = np.maximum(n @ unit(light + [0, 0, 1]), 0)
     color = mesh.colors.copy()
     if material == "richardson":
         return pencil_average(color, drawing_tone(n))
-    if material == "nolighting":
-        return color
-    shade = 0.2 + 0.8 * diffuse
-    if material == "toon1":
-        shade = np.where(diffuse < 0.2, 0.48, np.where(diffuse < 0.65, 0.76, 1.0))
-    elif material == "toon2":
-        shade = np.where(diffuse < 0.5, 0.5, 1.0)
-    elif material == "shadow":
-        shade = np.full(len(n), 0.75)
-    elif material == "matte":
-        shade = 0.3 + 0.6 * diffuse
-    elif material in ("diff_metal", "spec_metal"):
-        shade = 0.2 + 0.5 * diffuse
-    elif material in ("metallic_chrome", "metallic_copper"):
+    ambient, lambert, spec, power = material_coefficients(material)
+    shade = ambient + lambert * diffuse
+    if material in ("metallic_chrome", "metallic_copper"):
         bands = 0.3 + 0.7 * (0.5 + 0.5 * np.sin(n[:, 1] * 11.0 + n[:, 2] * 4.0)) ** 2
         metal = (
             [1.0, 0.55, 0.27] if material == "metallic_copper" else [0.83, 0.9, 0.96]
@@ -80,16 +71,15 @@ def bake(mesh, material, rotation=None):
         )
         color = np.array([0.25, 0.095, 0.035]) + grain[:, None] * [0.55, 0.35, 0.15]
     result = color * shade[:, None]
-    if material in (
-        "diff_metal",
-        "spec_metal",
-        "metallic_chrome",
-        "metallic_copper",
-    ):
-        power = 70.0 if material in ("spec_metal", "metallic_chrome") else 25.0
-        result += 0.7 * specular[:, None] ** power
+    if material in ("metallic_chrome", "metallic_copper"):
+        spec, power = 0.7, 70.0 if material == "metallic_chrome" else 25.0
+    result += spec * np.where(diffuse > 0, specular**power, 0)[:, None]
     return np.clip(result, 0, 1)
 
 
 def material_id(name):
     return MATERIALS.index(name)
+
+
+def material_coefficients(name):
+    return OPENGL_MATERIALS.get(name, OPENGL_MATERIALS["default"])

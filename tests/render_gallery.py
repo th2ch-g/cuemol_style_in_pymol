@@ -11,6 +11,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("docs/gallery"))
     parser.add_argument("--cache", type=Path, default=Path(".cache/gallery"))
+    parser.add_argument(
+        "--only", nargs="+", help="Render only the named gallery entries"
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     args.cache.mkdir(parents=True, exist_ok=True)
@@ -22,6 +25,7 @@ def main():
             structure.write_bytes(response.read())
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from cuemol_style_in_pymol import cuemol_style
+    from cuemol_style_in_pymol.presets import PROFILES
     import pymol
 
     pymol.invocation.options.show_splash = 0
@@ -76,7 +80,19 @@ def main():
             ("dna", ["nucleic"]),
             ("atoms", ["ballstick", "sticks", "cpk", "richardson_cpk"]),
         ]
+        covered = {name for _, names in groups for name in names}
+        groups[0][1].extend(name for name in PROFILES if name not in covered)
+        if args.only:
+            groups = [
+                (sample, [name for name in names if name in args.only])
+                for sample, names in groups
+            ]
+            unknown = set(args.only) - {name for _, names in groups for name in names}
+            if unknown:
+                parser.error(f"Unknown gallery entries: {sorted(unknown)}")
         for sample, profiles in groups:
+            if not profiles:
+                continue
             cmd.delete("all")
             if sample == "protein":
                 cmd.load(str(structure), sample)

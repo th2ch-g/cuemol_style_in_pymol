@@ -29,6 +29,18 @@ MATERIALS = (
     "wood14scl2",
     "richardson",
 )
+# Ambient, diffuse, specular, and shininess from CueMol's OpenGL materials.
+OPENGL_MATERIALS = {
+    "default": (0.2, 0.8, 0.0, 32.0),
+    "shadow": (0.75, 0.0, 0.0, 0.0),
+    "nolighting": (1.0, 0.0, 0.0, 0.0),
+    "matte": (0.3, 0.6, 0.0, 32.0),
+    "toon1": (0.0, 0.85, 0.0, 0.0),
+    "toon2": (0.0, 0.85, 0.0, 32.0),
+    "diff_metal": (0.2, 0.5, 0.7, 76.8),
+    "spec_metal": (0.2, 0.5, 0.7, 76.8),
+}
+
 REPRESENTATIONS = (
     "auto",
     "ribbon",
