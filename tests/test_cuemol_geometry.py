@@ -228,3 +228,123 @@ def test_default_cuemol_palette_uses_gui_molecular_painting(representation):
     np.testing.assert_allclose(
         geometry.atom_colors(atoms, "keep"), [a.color for a in atoms]
     )
+
+
+def test_natural_chord_spline_reference_midpoint():
+    points, _ = geometry.interpolate([[0, 0, 0], [1, 1, 0], [2, 0, 0]], 2)
+    np.testing.assert_allclose(points[1], [0.5, 0.6875, 0], atol=1e-12)
+    np.testing.assert_allclose(points[3], [1.5, 0.6875, 0], atol=1e-12)
+
+
+def test_penalized_axis_preserves_lines_and_smooths_helix():
+    t = np.linspace(0, 1, 12)
+    line = np.c_[t, 2 * t, -3 * t]
+    op = geometry.smoothing_operator(12, 8)
+    fit = op @ line
+    np.testing.assert_allclose(fit[::8], line, atol=1e-8)
+    wave = line + np.c_[np.sin(t * 6 * np.pi), np.zeros((12, 2))]
+    assert np.linalg.norm((op @ wave)[::8] - line) < np.linalg.norm(wave - line) / 2
+
+
+@pytest.mark.parametrize(
+    "style,width", [("ribbon", 1.4), ("round_ribbon", 1.4), ("fancy_ribbon", 1.2)]
+)
+def test_sheet_body_width_matches_cuemol(style, width):
+    atoms, coords = strand()
+    mesh = geometry.polymer_mesh(
+        atoms,
+        coords,
+        geometry.atom_colors(atoms, "keep"),
+        presets.PROFILES[style],
+        "ribbon",
+        "medium",
+    )
+    body = (mesh.vertices[:, 0] > 5) & (mesh.vertices[:, 0] < 15)
+    np.testing.assert_allclose(np.abs(mesh.vertices[body, 1]).max(), width, atol=1e-6)
+    if style == "fancy_ribbon":
+        # Fancy sheets have flat faces and desaturated side walls, not oval sections.
+        normals = mesh.normals[body]
+        assert np.all(
+            np.isclose(np.abs(normals[:, 1]), 1) | np.isclose(np.abs(normals[:, 2]), 1)
+        )
+        front = body & (mesh.normals[:, 2] > 0.99)
+        np.testing.assert_allclose(
+            mesh.colors[front], np.tile(atoms[0].color, (front.sum(), 1)), atol=1e-6
+        )
+        assert mesh.colors[body & (mesh.normals[:, 1] > 0.99), 1].mean() > 0.4
+
+
+def test_fancy_section_has_circular_rails_and_flat_middle():
+    points, _ = geometry.section("fancy", 24)
+    physical = points * [1.3, 0.2]
+    np.testing.assert_allclose(np.abs(physical[:, 0]).max(), 1.3, atol=1e-12)
+    inner = np.abs(physical[:, 0]) < 1.0
+    np.testing.assert_allclose(
+        np.abs(physical[inner, 1]), 0.2 * np.sin(0.3 * np.pi), atol=1e-12
+    )
+
+
+def test_tube_and_nucleic_backbone_dimensions():
+    atoms = [atom(i, ss="") for i in range(4)]
+    coords = np.c_[np.arange(4) * 3.7, np.zeros((4, 2))]
+    colors = geometry.atom_colors(atoms, "keep")
+    tube = geometry.polymer_mesh(
+        atoms, coords, colors, presets.PROFILES["tube"], "tube", "medium"
+    )
+    np.testing.assert_allclose(
+        np.abs(tube.vertices[:, 1:]).max(axis=0), [0.35, 0.35], atol=1e-6
+    )
+    nucleic = [replace(a, name="P", kind="nucleic") for a in atoms]
+    backbone = geometry.polymer_mesh(
+        nucleic, coords, colors, presets.PROFILES["nucleic"], "nucleic", "medium"
+    )
+    np.testing.assert_allclose(
+        np.sort(np.abs(backbone.vertices[:, 1:]).max(axis=0)), [0.5, 1.25], atol=1e-6
+    )
+
+
+def test_atomic_radii_and_sharp_bond_colors():
+    atoms = [atom(0, kind="other", element="H", vdw=9.0)]
+    coords = np.zeros((1, 3))
+    for representation, radius in (("ballstick", 0.3), ("sticks", 0.2), ("cpk", 1.2)):
+        mesh = geometry.build(
+            atoms,
+            coords,
+            [],
+            None,
+            presets.PROFILES["default"],
+            representation,
+            "medium",
+            "keep",
+        )
+        np.testing.assert_allclose(
+            np.linalg.norm(mesh.vertices, axis=1), radius, atol=1e-6
+        )
+    bond = geometry.bond(
+        np.array([0, 0, 0]),
+        np.array([4, 0, 0]),
+        0.2,
+        [[1, 0, 0], [0, 0, 1]],
+        [0, 1],
+        16,
+    )
+    np.testing.assert_allclose(
+        bond.colors[bond.vertices[:, 0] < 2],
+        np.tile([1, 0, 0], ((bond.vertices[:, 0] < 2).sum(), 1)),
+    )
+    np.testing.assert_allclose(
+        bond.colors[bond.vertices[:, 0] > 2],
+        np.tile([0, 0, 1], ((bond.vertices[:, 0] > 2).sum(), 1)),
+    )
+
+
+def test_richardson_native_average_retains_paper_and_pigment():
+    from cuemol_style_in_pymol.materials import drawing_tone, pencil_average
+
+    tone = drawing_tone(np.array([[0, 0, 1], [1, 0, 0], [-1, 0, 0]]))
+    assert tone[0] > 0.92
+    assert tone[2] < tone[1] < tone[0]
+    colors = pencil_average(np.tile([0.2, 0.4, 0.8], (3, 1)), tone)
+    np.testing.assert_allclose(colors[0], [0.941, 0.925, 0.867])
+    assert colors[2].mean() < colors[0].mean()
+    assert colors[2, 2] > colors[2, 0]

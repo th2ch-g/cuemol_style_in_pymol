@@ -1,11 +1,12 @@
 """Molecular mesh construction inspired by CueMol's documented sections.
 
-The implementation uses Catmull-Rom interpolation and transported peptide
-frames, not CueMol's smoothing-spline implementation. Widths follow the
-public DefaultRibbon/Fancy1Ribbon style definitions (angstrom units).
+Ribbon and tube axes use natural cubic splines with chord-length knots.
+Dimensions follow CueMol renderer styles in angstrom units. Cartoon junctions
+and solvent-excluded surfaces remain independent approximations.
 """
 
 import colorsys
+from copy import deepcopy
 from functools import lru_cache
 import xml.etree.ElementTree as ET
 
@@ -14,6 +15,7 @@ import numpy as np
 from .mesh import Mesh, merge, unit
 from .presets import (
     COIL_COLOR,
+    CUEMOL_RADII,
     CUEMOL_ELEMENTS,
     CUEMOL_NUCLEIC_COLOR,
     CUEMOL_OTHER_COLOR,
@@ -35,29 +37,57 @@ def section(kind, detail):
             [[0, -1], [0, -1], [1, 0], [1, 0], [0, 1], [0, 1], [-1, 0], [-1, 0]], float
         )
         return points, normals
+    if kind == "fancy":
+        # Two circular rails joined by flat faces, using Fancy1's sharp=0.3.
+        theta = 0.3 * np.pi
+        angle = np.linspace(
+            theta - np.pi / 2, 3 * np.pi / 2 - theta, max(8, detail // 2) + 1
+        )
+        rail = np.c_[(1.1 + 0.2 * np.sin(angle)) / 1.3, np.cos(angle)]
+        normal = np.c_[1.3 * np.sin(angle), 0.2 * np.cos(angle)]
+        points = np.vstack((rail, rail[-1], -rail[0], -rail, -rail[-1], rail[0]))[::-1]
+        normals = np.vstack((normal, [0, -1], [0, -1], -normal, [0, 1], [0, 1]))[::-1]
+        return points, unit(normals)
     t = np.linspace(0, 2 * np.pi, detail, endpoint=False)
     points = np.c_[np.cos(t), np.sin(t)]
-    if kind == "fancy":
-        # A thin middle with rounded rails at both ribbon margins.
-        points[:, 1] *= 0.3 + 0.7 * np.abs(points[:, 0]) ** 6
-    tangents = np.roll(points, -1, axis=0) - np.roll(points, 1, axis=0)
-    return points, unit(np.c_[tangents[:, 1], -tangents[:, 0]])
+    return points, points.copy()
 
 
 def interpolate(points, samples):
+    from scipy.interpolate import CubicSpline
+
     p = np.asarray(points, float)
     if len(p) == 1:
         return p.copy(), np.array([0.0])
     x = np.arange((len(p) - 1) * samples + 1) / samples
-    i = np.minimum(x.astype(int), len(p) - 2)
-    t = (x - i)[:, None]
-    a, b, c, d = [p[np.clip(i + j, 0, len(p) - 1)] for j in (-1, 0, 1, 2)]
-    return 0.5 * (
-        (2 * b)
-        + (-a + c) * t
-        + (2 * a - 5 * b + 4 * c - d) * t * t
-        + (-a + 3 * b - 3 * c + d) * t * t * t
-    ), x
+    knots = np.r_[
+        0, np.cumsum(np.maximum(np.linalg.norm(np.diff(p, axis=0), axis=1), 1e-8))
+    ]
+    sample = np.interp(x, np.arange(len(p)), knots)
+    return CubicSpline(knots, p, bc_type="natural")(sample), x
+
+
+@lru_cache(maxsize=64)
+def smoothing_operator(count, samples, rho=3.0):
+    """Fit the same normalized natural-spline curvature penalty as CueMol."""
+    from scipy.interpolate import CubicSpline
+
+    nodes = np.linspace(-1, 1, max(4, count))
+    basis = CubicSpline(nodes, np.eye(len(nodes)), bc_type="natural")
+    design = basis(np.linspace(-1, 1, count))
+    # Two-point Gaussian quadrature integrates products of linear second
+    # derivatives exactly on each cubic-spline interval.
+    mid = (nodes[1:] + nodes[:-1]) / 2
+    half = np.diff(nodes) / 2
+    abscissa = (mid[:, None] + half[:, None] * np.array([-1, 1]) / np.sqrt(3)).ravel()
+    derivative = basis(abscissa, 2)
+    penalty = derivative.T @ (np.repeat(half, 2)[:, None] * derivative)
+    scale = np.sum(design**2, axis=0).max()
+    weight = 10.0**rho * scale / np.diag(penalty).max()
+    normal = design.T @ design + weight * penalty
+    normal += np.eye(len(nodes)) * scale * (1 + weight) * 10 * np.finfo(float).eps
+    coefficients = np.linalg.solve(normal, design.T)
+    return basis(np.linspace(-1, 1, (count - 1) * samples + 1)) @ coefficients
 
 
 def frames(path, hints):
@@ -74,7 +104,17 @@ def frames(path, hints):
 
 
 def sweep(
-    path, widths, thickness, hints, colors, owners, kind, detail, back=False, front=None
+    path,
+    widths,
+    thickness,
+    hints,
+    colors,
+    owners,
+    kind,
+    detail,
+    back=False,
+    front=None,
+    side_color=False,
 ):
     if len(path) < 2:
         return Mesh([], [], [], [], [])
@@ -93,7 +133,7 @@ def sweep(
         + up[:, None] * sn[None, :, 1, None] / np.maximum(thick[:, None, None], 1e-6)
     )
     col = np.repeat(np.asarray(colors)[:, None, :], k, axis=1)
-    if back:
+    if back or side_color:
         # Frame signs can depend on preceding strands and loops. Color helix
         # undersides by the physical inward direction without twisting the mesh.
         polarity = (
@@ -102,6 +142,10 @@ def sweep(
             else np.ones(len(path))
         )
         mask = polarity[:, None] * shape[None, :, 1] < -0.1
+        if front is not None:
+            mask &= np.linalg.norm(front, axis=1)[:, None] > 1e-7
+        if side_color:
+            mask = np.broadcast_to(np.abs(sn[:, 0]) > 0.5, col.shape[:2])
         original = col[mask]
         value = original.max(axis=-1, keepdims=True)
         saturation = (value - original.min(axis=-1, keepdims=True)) / np.maximum(
@@ -198,15 +242,25 @@ def bond(a, b, radius, colors, owners, detail):
         return Mesh([], [], [], [], [])
     t = unit(b - a)
     h = np.eye(3)[np.argmin(np.abs(t))]
-    return sweep(
-        np.array([a, (a + b) / 2, b]),
-        radius,
-        radius,
-        np.tile(h, (3, 1)),
-        [colors[0], colors[0], colors[1]],
-        [owners[0], owners[0], owners[1]],
-        "ellipse",
-        detail,
+    middle = (a + b) / 2
+    # Independent half cylinders keep the element-color boundary sharp.
+    return merge(
+        [
+            sweep(
+                np.array([start, end]),
+                radius,
+                radius,
+                np.tile(h, (2, 1)),
+                [color, color],
+                [owner, owner],
+                "ellipse",
+                detail,
+            )
+            for start, end, color, owner in (
+                (a, middle, colors[0], owners[0]),
+                (middle, b, colors[1], owners[1]),
+            )
+        ]
     )
 
 
@@ -300,7 +354,7 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
     current = []
     last_key = None
     for key, r in residues.items():
-        pivot = r.get("CA", r.get("P", r.get("C4'", r.get("C4*"))))
+        pivot = r.get("CA", r.get("P"))
         if pivot is None:
             if current:
                 segments.append(current)
@@ -325,84 +379,135 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
         if len(ca) < 2:
             meshes.append(sphere(ca[0], 0.25, colors[indices[0]], indices[0], detail))
             continue
+        seq = np.array([atoms[i].ss for i in indices])
+        nucleic = atoms[indices[0]].kind == "nucleic"
         hints = []
         for j, (p, r) in enumerate(segment):
-            if "C" in r and "O" in r:
-                hints.append(coords[r["O"]] - coords[r["C"]])
+            if seq[j] == "S" and "C" in r and "O" in r:
+                hint = coords[r["O"]] - coords[r["C"]]
+            elif len(ca) >= 3:
+                k = np.clip(j, 1, len(ca) - 2)
+                hint = np.cross(ca[k] - ca[k - 1], ca[k + 1] - ca[k])
             else:
-                d = ca[min(j + 1, len(ca) - 1)] - ca[max(j - 1, 0)]
-                hints.append(np.eye(3)[np.argmin(np.abs(d))])
-        path, x = interpolate(ca, axial)
-        # Align peptide frames before interpolation: beta-strand carbonyls
-        # alternate sides and otherwise make the interpolated frame collapse.
-        aligned, _ = frames(ca, np.asarray(hints))
-        hi, _ = interpolate(aligned, axial)
+                hint = np.array([1.0, 0, 0])
+            hints.append(hint)
+        axis_points = ca.copy()
+        if representation == "ribbon" and not nucleic and len(ca) > 2:
+            interior = np.flatnonzero(seq[1:-1] == "S") + 1
+            axis_points[interior] = (
+                ca[interior] * 0.5 + (ca[interior - 1] + ca[interior + 1]) * 0.25
+            )
+        path, x = interpolate(axis_points, axial)
+        aligned, _ = frames(axis_points, np.asarray(hints))
+        normal_path, _ = interpolate(axis_points + aligned, axial)
+        hi = normal_path - path
         pick = np.clip(np.floor(x + 0.5).astype(int), 0, len(indices) - 1)
         owner = indices[pick]
-        ss = np.array([atoms[i].ss for i in owner])
-        seq = [atoms[i].ss for i in indices]
+        ss = seq[pick]
         front = None
         if profile.back and representation == "ribbon":
             front, _ = interpolate(helix_outward(ca, np.asarray(hints), seq), axial)
             front[ss != "H"] = 0
-        width = np.full(len(path), 0.25)
-        thickness = np.full(len(path), 0.25)
-        if representation not in ("tube", "nucleic"):
-            width[ss == "H"] = 1.3 if profile.section == "fancy" else 1.2
-            width[ss == "S"] = 1.2
-            thickness[(ss == "H") | (ss == "S")] = 0.2
-            # Taper the final residue of each sheet toward the C terminus.
-            for j, s in enumerate(seq):
-                if s == "S" and (j == len(seq) - 1 or seq[j + 1] != "S"):
-                    tip = j if j == len(seq) - 1 else j + 0.5
-                    region = (x >= max(0, tip - 1.2)) & (x <= tip)
-                    width[region] = np.maximum(0.025, 1.92 * (tip - x[region]) / 1.2)
+        fancy = profile.section == "fancy" and representation == "ribbon"
+        coil = 0.2 if representation == "cartoon" else 0.25 if fancy else 0.35
+        width = np.full(len(path), 1.25 if nucleic else coil)
+        thickness = np.full(len(path), 0.5 if nucleic else coil)
+        if representation not in ("tube", "nucleic") and not nucleic:
+            width[ss == "H"] = 1.3 if fancy else 1.2
+            width[ss == "S"] = 1.2 if fancy else 1.4
+            thickness[np.isin(ss, ["H", "S"])] = 0.2
+            for j, secondary in enumerate(seq):
+                if secondary == "S" and (j == len(seq) - 1 or seq[j + 1] != "S"):
+                    begin, end = max(0, j - 0.5), min(len(seq) - 1, j + 0.5)
+                    region = (x >= begin) & (x <= end)
+                    t = (x[region] - begin) / max(end - begin, 1e-8)
+                    gamma = (
+                        1.0
+                        if fancy or representation == "cartoon"
+                        else 1.2
+                        if profile.section == "ellipse"
+                        else 2.2
+                    )
+                    shoulder = (1.2 if fancy else 1.4) * (1.6 if fancy else 1.8)
+                    tip = coil if j < len(seq) - 1 else 0.025
+                    width[region] = tip + (shoulder - tip) * (1 - t) ** gamma
         if representation == "cartoon":
             start = 0
             while start < len(seq):
                 end = start + 1
                 while end < len(seq) and seq[end] == seq[start]:
                     end += 1
-                if seq[start] == "H" and end - start >= 3:
+                if seq[start] in ("H", "S") and end - start >= 3:
                     part = ca[start:end]
-                    center = part.mean(axis=0)
-                    axis = np.linalg.svd(part - center, full_matrices=False)[2][0]
-                    if np.dot(axis, part[-1] - part[0]) < 0:
-                        axis = -axis
-                    projected = center + np.outer((part - center) @ axis, axis)
-                    mask = (x >= start) & (x <= end - 1)
-                    for k in range(3):
-                        path[mask, k] = np.interp(
-                            x[mask], np.arange(start, end), projected[:, k]
+                    rho = (
+                        1.0
+                        if seq[start] == "S" and profile.section == "ellipse"
+                        else 3.0
+                    )
+                    fitted = smoothing_operator(len(part), axial, rho) @ part
+                    projected = fitted[::axial]
+                    fitted_hints = (
+                        smoothing_operator(len(part), axial, rho) @ aligned[start:end]
+                    )
+                    mask = (x >= max(0, start - 0.5)) & (
+                        x <= min(len(ca) - 1, end - 0.5)
+                    )
+                    sample_x = np.arange(len(fitted)) / axial + start
+                    for axis in range(3):
+                        path[mask, axis] = np.interp(x[mask], sample_x, fitted[:, axis])
+                        hi[mask, axis] = np.interp(
+                            x[mask], sample_x, fitted_hints[:, axis]
                         )
-                    width[mask] = thickness[mask] = 1.6
+                    before = mask & (x < start)
+                    after = mask & (x > end - 1)
+                    path[before] += (
+                        (x[before] - start)[:, None] * (fitted[1] - fitted[0]) * axial
+                    )
+                    path[after] += (
+                        (x[after] - end + 1)[:, None]
+                        * (fitted[-1] - fitted[-2])
+                        * axial
+                    )
+                    if seq[start] == "H":
+                        radius = np.linalg.norm(part - projected, axis=1).mean() + 0.2
+                        width[mask] = thickness[mask] = max(radius, 0.2)
                 start = end
         # Sections change only at secondary-structure boundaries.
-        kinds = np.where(np.isin(ss, ["H", "S"]), profile.section, "ellipse")
+        kinds = np.where(np.isin(ss, ["H", "S"]), profile.section, "ellipse").astype(
+            object
+        )
         if profile.section == "fancy":
             kinds[ss == "S"] = "rectangle"
-        if representation in ("tube", "nucleic"):
+        if representation in ("tube", "nucleic") or nucleic:
             kinds[:] = "ellipse"
         if representation == "cartoon":
             kinds[ss == "H"] = "ellipse"
         begin = 0
         while begin < len(path) - 1:
             end = begin + 1
-            while end < len(path) - 1 and kinds[end] == kinds[begin]:
+            while (
+                end < len(path) - 1
+                and kinds[end] == kinds[begin]
+                and ss[end] == ss[begin]
+            ):
                 end += 1
             sl = slice(begin, end + 1)
+            local_width, local_thickness = width[sl], thickness[sl]
+            if representation == "cartoon" and ss[begin] not in ("H", "S"):
+                local_width = local_thickness = 0.2
             meshes.append(
                 sweep(
                     path[sl],
-                    width[sl],
-                    thickness[sl],
+                    local_width,
+                    local_thickness,
                     hi[sl],
                     colors[owner[sl]],
                     owner[sl],
                     str(kinds[begin]),
                     detail,
-                    profile.back and kinds[begin] != "ellipse",
+                    profile.back and kinds[begin] != "ellipse" and ss[begin] == "H",
                     front[sl] if front is not None else None,
+                    side_color=fancy and ss[begin] == "S",
                 )
             )
             begin = end
@@ -410,77 +515,85 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
 
 
 def nucleic_bases(atoms, coords, colors, detail):
-    residues = {}
-    for i, a in enumerate(atoms):
-        if a.kind == "nucleic":
-            residues.setdefault((a.segi, a.chain, a.resi), []).append(i)
-    meshes = []
-    from scipy.spatial import ConvexHull
+    """DefaultNucl base-pair rods, inferred from hydrogen-bond geometry."""
+    from scipy.spatial import cKDTree
 
-    for indices in residues.values():
-        base = [
-            i
-            for i in indices
-            if "'" not in atoms[i].name
-            and "*" not in atoms[i].name
-            and atoms[i].element in ("C", "N")
-            and atoms[i].name not in ("C5M",)
-        ]
-        if len(base) < 3:
+    residues = {}
+    for i, atom in enumerate(atoms):
+        if atom.kind == "nucleic" and atom.alt in ("", "A"):
+            residues.setdefault((atom.segi, atom.chain, atom.resi), {})[atom.name] = i
+    records = []
+    for r in residues.values():
+        pivot = r.get("P")
+        purine = all(name in r for name in ("C4", "C5", "C8"))
+        names = ("C4", "C5", "C8") if purine else ("C2", "C4", "C6")
+        end = r.get("N1" if purine else "N3")
+        if pivot is None or end is None or not all(name in r for name in names):
             continue
-        p = coords[base]
-        center = p.mean(axis=0)
-        axes = np.linalg.svd(p - center, full_matrices=False)[2]
-        flat = (p - center) @ axes[:2].T
-        try:
-            ring = ConvexHull(flat).vertices
-        except Exception:
-            continue
-        ringp = center + flat[ring] @ axes[:2]
-        owner = base[0]
-        n = axes[2]
-        count = len(ring)
-        v = np.vstack((ringp + 0.15 * n, ringp - 0.15 * n))
-        f = []
-        for j in range(1, count - 1):
-            f.extend(((0, j, j + 1), (count, count + j + 1, count + j)))
-        for j in range(count):
-            k = (j + 1) % count
-            f.extend(((j, k, count + j), (k, count + k, count + j)))
-        faces = np.asarray(f)
-        normals = np.cross(
-            v[faces[:, 1]] - v[faces[:, 0]], v[faces[:, 2]] - v[faces[:, 0]]
+        a, b, c = coords[[r[name] for name in names]]
+        normal = unit(np.cross(b - a, c - a))
+        records.append((r, pivot, end, normal))
+    sites, residue_ids = [], []
+    edge_names = {"N1", "N2", "O6", "N6", "N3", "N4", "O2", "O4"}
+    for j, (r, _, _, _) in enumerate(records):
+        for name, index in r.items():
+            if name in edge_names:
+                sites.append(index)
+                residue_ids.append(j)
+    counts = {}
+    pairs = {
+        frozenset(pair)
+        for pair in (
+            ("N4", "O6"),
+            ("N3", "N1"),
+            ("O2", "N2"),
+            ("O4", "N6"),
+            ("N3", "O6"),
+            ("O2", "N1"),
         )
-        reverse = np.sum(normals * (v[faces].mean(axis=1) - center), axis=1) < 0
-        faces[reverse] = faces[reverse, ::-1]
-        normals[reverse] *= -1
-        # Duplicate triangle vertices for flat base faces and sharp slab rims.
-        v = v[faces].reshape(-1, 3)
-        normals = np.repeat(unit(normals), 3, axis=0)
-        faces = np.arange(len(v)).reshape(-1, 3)
+    }
+    if sites:
+        tree = cKDTree(coords[sites])
+        for i, j in sorted(tree.query_pairs(3.7)):
+            a, b = sites[i], sites[j]
+            ri, rj = residue_ids[i], residue_ids[j]
+            if ri == rj or frozenset((atoms[a].name, atoms[b].name)) not in pairs:
+                continue
+            direction = unit(coords[a] - coords[b])
+            if max(
+                abs(records[ri][3] @ direction), abs(records[rj][3] @ direction)
+            ) > np.sin(np.deg2rad(30)):
+                continue
+            key = tuple(sorted((ri, rj)))
+            counts[key] = counts.get(key, 0) + 1
+    partners = {}
+    for (i, j), count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        if count >= 2 and i not in partners and j not in partners:
+            partners[i], partners[j] = j, i
+    meshes = []
+    for j, (_, pivot, end, _) in enumerate(records):
+        partner = partners.get(j)
+        if partner is not None:
+            if partner < j:
+                continue
+            target = records[partner][1]
+        else:
+            target = end
         meshes.append(
-            Mesh(
-                v,
-                normals,
-                np.tile(colors[owner], (len(v), 1)),
-                faces,
-                np.full(len(v), owner),
+            bond(
+                coords[pivot],
+                coords[target],
+                0.5,
+                [
+                    colors[pivot],
+                    colors[target] if partner is not None else colors[pivot],
+                ],
+                [pivot, target if partner is not None else pivot],
+                detail,
             )
         )
-        anchor = next(
-            (i for i in indices if atoms[i].name in ("C1'", "C1*", "P")), None
-        )
-        if anchor is not None:
-            meshes.append(
-                bond(
-                    coords[anchor],
-                    center,
-                    0.15,
-                    [colors[owner]] * 2,
-                    [owner] * 2,
-                    detail,
-                )
-            )
+        if partner is None:
+            meshes.append(sphere(coords[end], 0.5, colors[pivot], pivot, detail))
     return merge(meshes)
 
 
@@ -491,11 +604,15 @@ def surface_mesh(model, colors, coords, quality):
 
     with pymol2.PyMOL() as p:
         c = p.cmd
+        model = deepcopy(model)
+        for atom in model.atom:
+            atom.vdw = CUEMOL_RADII.get(atom.symbol.upper(), 1.7)
         c.load_model(model, "surface_source")
         c.hide("everything")
         c.show("surface")
         c.set("surface_quality", {"low": 0, "medium": 1, "high": 2}[quality])
         c.set("surface_solvent", 0)
+        c.set("solvent_radius", 1.4)
         xml = c.get_collada()
     root = ET.fromstring(xml)
     ns = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
@@ -578,11 +695,11 @@ def build(atoms, coords, bonds, model, profile, representation, quality, color_m
     for i in sorted(chosen):
         a = atoms[i]
         if representation == "cpk":
-            radius = a.vdw
+            radius = CUEMOL_RADII.get(a.element.upper(), 1.7)
         elif representation == "sticks":
-            radius = 0.18
+            radius = 0.2
         else:
-            radius = 0.12 if a.element == "H" else 0.3
+            radius = 0.3
         parts.append(sphere(coords[i], radius, colors[i], i, detail))
     if representation != "cpk":
         for i, j in bonds:
@@ -591,7 +708,7 @@ def build(atoms, coords, bonds, model, profile, representation, quality, color_m
                     bond(
                         coords[i],
                         coords[j],
-                        0.14,
+                        0.2,
                         [colors[i], colors[j]],
                         [i, j],
                         detail,

@@ -59,11 +59,50 @@ The existing background is preserved. `color=keep` uses existing atom colors.
 
 Standard `ray` and `png, ray=1` use retained native CGO. The dedicated ray
 operation adds camera-dependent outline geometry and material samples.
-Ray shading approximates the GPU appearance. The `richardson` profile does
-not implement CueMol 3's hatching strokes.
+The `richardson` GPU profile uses warm paper, three layers of irregular
+colored-pencil strokes, bright unmarked highlights, and dark contour lines.
+Standard ray, dedicated ray, and transparent CGO approximate the marks by their
+average tone; they cannot run the per-pixel pencil shader.
 
 See the [full guide](docs/pymol_cuemol.rst) for styles, states, selection,
 session restoration, memory limits, and rendering differences.
+
+## Gallery
+
+Actual PyMOL GPU PNGs at `quality=high`, with CueMol default colors and a white
+background. Protein views use [crambin, PDB 1CRN](https://www.rcsb.org/structure/1CRN).
+DNA uses PyMOL's `fnab` builder; atomic views use its tryptophan fragment.
+Run `cuemol_style <style>` for a geometry preset. Sticks use
+`cuemol_style default, representation=sticks`.
+
+| Ribbon | Round ribbon | Fancy ribbon |
+| --- | --- | --- |
+| ![Ribbon](docs/gallery/ribbon.png) | ![Round ribbon](docs/gallery/round_ribbon.png) | ![Fancy ribbon](docs/gallery/fancy_ribbon.png) |
+| `ribbon` | `round_ribbon` | `fancy_ribbon` |
+| ![Cartoon](docs/gallery/cartoon.png) | ![Round cartoon](docs/gallery/round_cartoon.png) | ![Tube](docs/gallery/tube.png) |
+| `cartoon` | `round_cartoon` | `tube` |
+| ![Nucleic](docs/gallery/nucleic.png) | ![Ball and stick](docs/gallery/ballstick.png) | ![Sticks](docs/gallery/sticks.png) |
+| `nucleic` | `ballstick` | `representation=sticks` |
+| ![CPK](docs/gallery/cpk.png) | ![Surface](docs/gallery/surface.png) | |
+| `cpk` | `surface` | |
+
+| Richardson ribbon | Richardson CPK |
+| --- | --- |
+| ![Richardson ribbon](docs/gallery/richardson.png) | ![Richardson CPK](docs/gallery/richardson_cpk.png) |
+| `cuemol_style richardson` | `cuemol_style richardson, representation=cpk` |
+
+The representation audit in the [full guide](docs/pymol_cuemol.rst) records the
+matched dimensions and remaining differences. This is an independent renderer;
+the images are not claimed to be pixel-identical to CueMol.
+
+Regenerate the gallery in the repository's PyMOL Qt environment:
+
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python tests/render_gallery.py
+```
+
+The published PNGs are versioned for README display. Downloaded coordinates and
+temporary validation output stay in the ignored `.cache` directory.
 
 ## Develop and validate
 
@@ -78,4 +117,4 @@ uv run --no-project --python .pixi/envs/default/bin/python python \
 The standalone harness verifies real PyMOL ray export, all presets, restoration,
 state changes, Qt picking, native/custom transparency, and GPU state preservation.
 The optional benchmark uses 500 residues and 100 synthetic states.
-Generated images, environments, build products, and caches are ignored.
+Temporary images, environments, build products, and caches are ignored.

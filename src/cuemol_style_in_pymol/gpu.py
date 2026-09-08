@@ -199,12 +199,24 @@ class Pool:
             gl.glClientActiveTexture(gl.GL_TEXTURE1)
             gl.glDisableClientState(gl.GL_TEXTURE_COORD_ARRAY)
             gl.glClientActiveTexture(gl.GL_TEXTURE0)
-            program = self.program("body")
+            hatching = drawing.profile.material == "richardson"
+            program = self.program("hatch" if hatching else "body")
             gl.glUseProgram(program)
-            gl.glUniform1i(
-                gl.glGetUniformLocation(program, "material"),
-                material_id(drawing.profile.material),
-            )
+            if hatching:
+                gl.glUniform2f(
+                    gl.glGetUniformLocation(program, "hatchProjection"),
+                    float(viewport[2] * projection[0, 0] / 2),
+                    float(viewport[3] * projection[1, 1] / 2),
+                )
+                gl.glUniform1i(
+                    gl.glGetUniformLocation(program, "hatchPerspective"),
+                    abs(projection[3, 3]) < 0.5,
+                )
+            else:
+                gl.glUniform1i(
+                    gl.glGetUniformLocation(program, "material"),
+                    material_id(drawing.profile.material),
+                )
             gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
             gl.glPolygonOffset(1.0, 1.0)
             for piece in drawing.pieces:

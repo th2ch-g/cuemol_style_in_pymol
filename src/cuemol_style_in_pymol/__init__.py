@@ -64,6 +64,8 @@ def cuemol_style(
 
         All loaded states are prepared before playback. Use refresh after
         coordinate, topology, color, secondary-structure, or state edits.
+        Richardson uses a paper-and-colored-pencil GPU shader. Native ray
+        and transparent bodies approximate its stroke coverage as vertex tones.
         Opaque bodies and edges use GLSL. Transparent bodies use native CGO
         with baked lighting. Retained ray-only CGO also supports standard ray
         and png, ray=1 with approximate materials. Use the dedicated ray

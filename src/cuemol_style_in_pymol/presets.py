@@ -27,6 +27,7 @@ MATERIALS = (
     "stone35",
     "wood31",
     "wood14scl2",
+    "richardson",
 )
 REPRESENTATIONS = (
     "auto",
@@ -61,10 +62,12 @@ CUEMOL_ELEMENTS = {
     "S": (0.0, 1.0, 0.0),
     "P": (1.0, 1.0, 0.0),
 }
+CUEMOL_RADII = {"H": 1.2, "C": 1.7, "N": 1.55, "O": 1.52, "S": 1.8, "P": 1.8}
+
 PROFILES = {name: Profile(material=name) for name in MATERIALS}
 PROFILES.update(
     {
-        "richardson": Profile("ribbon", "fancy", "toon1", "edges", back=True),
+        "richardson": Profile("ribbon", "fancy", "richardson", "edges", back=True),
         "ribbon": Profile("ribbon"),
         "round_ribbon": Profile("ribbon", "ellipse"),
         "fancy_ribbon": Profile("ribbon", "fancy", back=True),

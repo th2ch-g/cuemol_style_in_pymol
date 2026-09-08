@@ -37,12 +37,17 @@ After loading a structure, run these commands in the PyMOL command line:
 
 The default named view is ``cuemol``. Applying another style with the same
 name replaces that view. ``richardson`` uses thin ribbons, sheet arrows,
-lighter undersides, stepped lighting, and black silhouette/crease lines.
+lighter helix undersides, colored-pencil hatching, and black silhouette/crease lines.
 Rotation and zoom update the GPU rendering immediately.
 
-The ``richardson`` profile does not implement the hatching strokes in
-CueMol 3's tone renderer. Its helix outside keeps the base color, while the
-inside uses a lighter color independently of the preceding ribbon frame.
+The ``richardson`` GPU shader follows CueMol 3's Richardson tone recipe:
+warm paper, three irregular pencil layers at 55, -35, and 80 degrees,
+pigment-colored strokes, and unmarked highlights. Tone depends on the
+surface normal and viewing direction. Helix outside faces retain the base
+pigment; inside faces are lighter. The live shader uses a resolvable
+two-pixel lattice and independent procedural noise, without Umbreon's
+occlusion, depth fog, or screen-space stroke-edge pass. It is an interactive
+approximation rather than a pixel-identical Umbreon rendering.
 
 Styles and controls
 -------------------
@@ -69,7 +74,7 @@ Styles and controls
 Geometry presets choose a representation. Material presets use
 ``representation=auto``: existing sticks, spheres, surface, cartoon, and
 ribbon layers are retained as custom geometry. Atoms shown only as lines or
-nonbonded points become protein ribbons, nucleic backbones/base slabs, or
+nonbonded points become protein ribbons, nucleic backbones/base-pair rods, or
 ball-and-stick geometry. Hidden atoms stay hidden in this automatic mode.
 Maps, labels, and other unsupported layers remain native.
 
@@ -203,7 +208,9 @@ coordinates during rotation. Standard ray uses the same molecular-space
 material samples and the user's PyMOL lighting/outline settings. The
 dedicated ray operation instead uses camera-space samples and cylindrical
 outline geometry. Both ray paths differ from the GPU shading and line
-appearance. Wood, stone, and
+appearance. For Richardson, ray and transparent CGO use the average
+colored-pencil coverage as vertex tones; individual hatching strokes are
+available in opaque GPU rendering and ``cuemol_style png``. Wood, stone, and
 metal are procedural approximations; they do not reproduce CueMol's
 POV-Ray textures exactly. ``shadow`` is a flat shading material, not a
 scene-shadow generator.
@@ -212,6 +219,48 @@ Object transformation matrices, stereo/VR picking, editing atoms
 by dragging, and headless interactive GPU rendering are outside the
 supported interface; apply coordinate transforms to source atoms and
 refresh when needed.
+
+Representation audit
+--------------------
+
+Geometry defaults were checked against `CueMol 3173d8a
+<https://github.com/CueMol/cuemol2/tree/3173d8af62e211dd37b943ee53b3d6a632e6b5d7>`_,
+including ``default_style.xml``, ``TubeSection``, ``RibbonRenderer``,
+``Ribbon2Renderer``, ``NARenderer``, and the atomic renderers. Richardson
+tone parameters were checked against `Umbreon bf75c8a
+<https://github.com/CueMol/umbreon/tree/bf75c8adc05ed70a1344afbd718bcaab651c1070>`_.
+These are source-level checks; no claim of pixel equality is made.
+
+* ``ribbon`` and ``round_ribbon``: helix half-width 1.2, sheet half-width
+  1.4, half-thickness 0.2, coil radius 0.35 angstrom. Axes use natural cubic
+  splines with chord-length knots and 50 percent sheet-pivot smoothing.
+  Sheet-arrow expansion is 1.8, with gamma 2.2 or 1.2 respectively.
+* ``fancy_ribbon`` and ``richardson``: helix half-width 1.3, circular rail
+  radius 0.2, sharpness 0.3, sheet half-width 1.2, and coil radius 0.25.
+  Helix backs and sheet side walls reduce HSV saturation by 0.4. Sheet
+  arrows expand by 1.6 with gamma 1.0.
+* ``cartoon`` and ``round_cartoon``: penalized natural-spline helix axes
+  use rho 3.0; cylinder radius is the mean pivot-to-axis distance plus
+  0.2. Sheet half-width/thickness are 1.4/0.2, with smoothing rho 3.0 or
+  1.0 respectively; coil radius is 0.2. Sheet arrows use expansion 1.8
+  and gamma 1.0. Junction and endpoint constraints are approximations.
+* ``tube``: radius 0.35 with a natural cubic axis. ``nucleic``: P-atom
+  pivots, an elliptical backbone with half-axes 1.25/0.5, and base-pair
+  rods of radius 0.5. Base pairs are inferred from compatible in-plane
+  hydrogen-bond contacts. Pair assignment and modified-base support can
+  differ from CueMol's residue topology and base-pair metadata.
+* ``ballstick``: every atom radius 0.3 and bond radius 0.2. ``sticks``:
+  atom and bond radius 0.2. Bond colors split sharply at the midpoint.
+  ``cpk``: H/C/N/O/S/P radii 1.2/1.7/1.55/1.52/1.8/1.8, other elements
+  1.7. Mesh tessellation depends on this plugin's quality setting.
+* ``surface``: solvent-excluded surface with a 1.4-angstrom probe and
+  the same element radii. PyMOL's surface mesher differs from CueMol's
+  EDTSurf/MeshMS implementation, so triangulation and fine details differ.
+
+Spline frames, chain-break detection, section transitions, caps, and
+surface ownership use this plugin's implementation. Matching default
+dimensions does not make every molecular representation identical.
+Maps and labels retain their existing native PyMOL representation.
 
 Validation
 ----------

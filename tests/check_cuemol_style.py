@@ -609,7 +609,7 @@ def gui_checks(cmd, widget, pump, output, style, report, structure):
     style("reset", _self=cmd)
     cmd.delete("all")
     report["gui_interaction"] = (
-        "atom/residue/shift selection, native drag rotation, native depth occlusion, native/custom transparency, two transparent surfaces, nucleic slabs"
+        "atom/residue/shift selection, native drag rotation, native depth occlusion, native/custom transparency, two transparent surfaces, nucleic base-pair rods"
     )
     state_checks(cmd, style, pump)
     report["gui_states"] = "native callback and CGO state switching plus movie mapping"
