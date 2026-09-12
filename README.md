@@ -20,7 +20,9 @@ To install into an existing Python environment that already provides PyMOL 3.1:
 uv pip install "git+https://github.com/th2ch-g/cuemol_style_in_pymol.git"
 ```
 
-The Python package requires Python 3.10+, NumPy, SciPy, and PyOpenGL.
+The Python package requires Python 3.10+, NumPy, SciPy, PyOpenGL, and Pillow.
+Building from source also requires a C++17 compiler; wheels contain the
+standalone EDTSurf, contour, and pencil-sampling extension.
 Interactive rendering additionally requires PyMOL 3.1 with Qt and a compatibility
 OpenGL 2.1 / GLSL 1.20 context. PyMOL is supplied by conda/pixi, not by pip.
 
@@ -99,8 +101,9 @@ Protein views share the same camera and use
 Run `cuemol_style <style>` for a named preset. The
 [full guide](docs/pymol_cuemol.md#representation-audit) records matched geometry
 dimensions, material coefficients, and remaining rendering differences.
-`toon1`/`toon2` and `diff_metal`/`spec_metal` each share CueMol's OpenGL lighting;
-their distinct POV-Ray finishes are not evaluated here.
+The comparison target is CueMol's current Umbreon direct renderer. The toon
+and metal pairs have distinct finishes. Wood and stone names use its PBR
+settings; legacy POV-Ray procedural textures belong to a different backend.
 
 Regenerate the gallery in the repository's PyMOL Qt environment:
 
@@ -136,15 +139,24 @@ or outline style.
 Default colors follow CueMol GUI's initial painting: khaki helices, SteelBlue
 sheets, FloralWhite coils, and yellow nucleic geometry. Atomic representations
 use DefaultCPKColoring, with carbon inheriting the molecular painting.
-Helix outside faces keep their base color and inside faces use a lighter color.
+Fancy/Richardson helices retain their pigment on the outside and rounded rails;
+the flat underside is lighter.
 The existing background is preserved. `color=keep` uses existing atom colors.
 
 Standard `ray` and `png, ray=1` use retained native CGO. The dedicated ray
 operation adds camera-dependent outline geometry and material samples.
 The `richardson` GPU profile uses warm paper, three layers of irregular
 colored-pencil strokes, bright unmarked highlights, and dark contour lines.
-Standard ray, dedicated ray, and transparent CGO approximate the marks by their
-average tone; they cannot run the per-pixel pencil shader.
+Opaque display uses a tiled 3x render pass. Screen-space depth and normal
+continuity define joined contours; internal sheet triangulation is never drawn
+as an outline. Transparent CGO and dedicated ray share visible-sample colors and
+contours on the same 3x grid. Dedicated exports combine completed transparent
+renderer passes in display space, with alpha coverage preserved. These paths favor
+appearance over frame rate and can require substantial preparation time and
+memory. Standard ray retains an averaged pencil fallback. Dedicated ray
+temporarily neutralizes PyMOL lighting
+for the whole exported scene; use GPU PNG when native objects must retain their
+existing lighting.
 
 See the [full guide](docs/pymol_cuemol.md) for styles, states, selection,
 session restoration, memory limits, and rendering differences.
@@ -162,4 +174,6 @@ uv run --no-project --python .pixi/envs/default/bin/python python \
 The standalone harness verifies real PyMOL ray export, all presets, restoration,
 state changes, Qt picking, native/custom transparency, and GPU state preservation.
 The optional benchmark uses 500 residues and 100 synthetic states.
+The [appearance audit](docs/pymol_cuemol.md#validation) compares real CueMol and
+PyMOL exports with identical atoms, colors, secondary structure, and cameras.
 Temporary images, environments, build products, and caches are ignored.

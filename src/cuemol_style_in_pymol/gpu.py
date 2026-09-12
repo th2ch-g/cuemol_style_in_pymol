@@ -1,20 +1,19 @@
 """Compatibility-profile GLSL renderer; never calls the PyMOL command API."""
 
 from collections import OrderedDict
-from ctypes import c_void_p
 from dataclasses import dataclass, field
 from importlib.resources import files
 
 import numpy as np
 
-from .materials import material_id, material_coefficients
+from .materials import finish, material_coefficients, material_id
+from .presets import PBR_MATERIALS
 
 
 @dataclass
 class Piece:
     mesh: object
     atoms: tuple
-    edges: np.ndarray
 
 
 @dataclass
@@ -31,6 +30,15 @@ class Drawing:
     anchors: object = None
     keys: tuple = ()
     selected: object = None
+    background: tuple = (0.0, 0.0, 0.0)
+    sample_key: object = None
+    sample_matrices: object = None
+    sampled_bytes: int = 0
+    sample_budget: int = 2048 * 1024**2
+    raster_image: object = None
+    raster_depth: object = None
+    raster_draws: int = 0
+    fog: tuple = (0.0, 1e10)
     extent: object = field(default_factory=lambda: [[0, 0, 0], [0, 0, 0]])
 
     def __post_init__(self):
@@ -58,7 +66,7 @@ class Drawing:
         try:
             self.pool.draw(self)
             self.draws += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - GUI callback boundary.
             self.error = str(exc)
             print(
                 f" cuemol_style: OpenGL drawing failed: {exc}. Use refresh after correcting the OpenGL context."
@@ -75,9 +83,14 @@ class Pool:
         self.context = None
         self.bytes = 0
         self.show_selection = True
+        self.raster_scale = 3
+        from .hatch import HatchPass
+
+        self.hatch = HatchPass()
 
     def clear(self):
-        from OpenGL import GL as gl, contextdata
+        from OpenGL import GL as gl
+        from OpenGL import contextdata
 
         current = contextdata.getContext()
         if current == self.context:
@@ -85,14 +98,17 @@ class Pool:
                 gl.glDeleteBuffers(len(handles), handles)
             for program in self.programs.values():
                 gl.glDeleteProgram(program)
+            self.hatch.clear()
+        else:
+            self.hatch.__init__()
         self.buffers.clear()
         self.programs.clear()
         self.bytes = 0
         self.context = current
 
     def program(self, name):
-        from OpenGL.GL.shaders import compileProgram, compileShader
         from OpenGL import GL as gl
+        from OpenGL.GL.shaders import compileProgram, compileShader
 
         if name not in self.programs:
             root = files(__package__).joinpath("shaders")
@@ -107,43 +123,17 @@ class Pool:
             )
         return self.programs[name]
 
-    def buffer(self, piece, edges=False):
+    def buffer(self, piece):
         from OpenGL import GL as gl
 
-        key = (id(piece.mesh), edges)
+        key = id(piece.mesh)
         if key in self.buffers:
             self.buffers.move_to_end(key)
             return self.buffers[key]
-        if edges:
-            e = piece.edges
-            data = np.empty(
-                (len(e), 4),
-                dtype=[
-                    ("position", "f4", 3),
-                    ("normal_a", "i2", 3),
-                    ("normal_b", "i2", 3),
-                    ("opposite_side", "f4", 4),
-                ],
-            )
-            data["position"][:, :2] = e[:, None, :3]
-            data["position"][:, 2:] = e[:, None, 3:6]
-            data["opposite_side"][:, :2, :3] = e[:, None, 3:6]
-            data["opposite_side"][:, 2:, :3] = e[:, None, :3]
-            data["opposite_side"][:, :, 3] = [-1.0, 1.0, -1.0, 1.0]
-            # Signed 16-bit unit normals reduce state uploads without changing
-            # positions or edge width; the vertex shader normalizes both.
-            data["normal_a"] = np.rint(32767 * e[:, None, 6:9]).astype(np.int16)
-            data["normal_b"] = np.rint(32767 * e[:, None, 9:12]).astype(np.int16)
-            arrays = [(gl.GL_ARRAY_BUFFER, data)]
-            count = data.size
-        else:
-            mesh = piece.mesh
-            data = np.c_[mesh.vertices, mesh.normals, mesh.colors].astype(np.float32)
-            arrays = [
-                (gl.GL_ARRAY_BUFFER, data),
-                (gl.GL_ELEMENT_ARRAY_BUFFER, mesh.faces),
-            ]
-            count = mesh.faces.size
+        mesh = piece.mesh
+        data = np.c_[mesh.vertices, mesh.normals, mesh.colors].astype(np.float32)
+        arrays = [(gl.GL_ARRAY_BUFFER, data), (gl.GL_ELEMENT_ARRAY_BUFFER, mesh.faces)]
+        count = mesh.faces.size
         size = sum(a.nbytes for _, a in arrays)
         if size > self.budget:
             raise RuntimeError(
@@ -166,8 +156,46 @@ class Pool:
         self.bytes += size
         return value
 
+    def body_program(self, drawing, projection):
+        from OpenGL import GL as gl
+
+        program = self.program("body")
+        gl.glUseProgram(program)
+        physical = PBR_MATERIALS.get(drawing.profile.material)
+        gl.glUniform1i(
+            gl.glGetUniformLocation(program, "principled"), physical is not None
+        )
+        if physical is not None:
+            gl.glUniform4f(gl.glGetUniformLocation(program, "pbr"), *physical[2:])
+        gl.glUniform1i(
+            gl.glGetUniformLocation(program, "material"),
+            material_id(drawing.profile.material),
+        )
+        gl.glUniform4f(
+            gl.glGetUniformLocation(program, "materialLighting"),
+            *(
+                physical[:2] + (0.0, 0.0)
+                if physical
+                else material_coefficients(drawing.profile.material)
+            ),
+        )
+        gl.glUniform4f(
+            gl.glGetUniformLocation(program, "materialFinish"),
+            *finish(drawing.profile.material)[4:8],
+        )
+        gl.glUniform1i(
+            gl.glGetUniformLocation(program, "perspective"),
+            abs(projection[3, 3]) < 0.5,
+        )
+        gl.glUniform3f(
+            gl.glGetUniformLocation(program, "background"), *drawing.background
+        )
+        gl.glUniform2f(gl.glGetUniformLocation(program, "fogRange"), *drawing.fog)
+        return program
+
     def draw(self, drawing):
-        from OpenGL import GL as gl, contextdata
+        from OpenGL import GL as gl
+        from OpenGL import contextdata
 
         current = contextdata.getContext()
         if current != self.context:
@@ -199,80 +227,10 @@ class Pool:
             gl.glClientActiveTexture(gl.GL_TEXTURE1)
             gl.glDisableClientState(gl.GL_TEXTURE_COORD_ARRAY)
             gl.glClientActiveTexture(gl.GL_TEXTURE0)
-            hatching = drawing.profile.material == "richardson"
-            program = self.program("hatch" if hatching else "body")
-            gl.glUseProgram(program)
-            if hatching:
-                gl.glUniform2f(
-                    gl.glGetUniformLocation(program, "hatchProjection"),
-                    float(viewport[2] * projection[0, 0] / 2),
-                    float(viewport[3] * projection[1, 1] / 2),
-                )
-                gl.glUniform1i(
-                    gl.glGetUniformLocation(program, "hatchPerspective"),
-                    abs(projection[3, 3]) < 0.5,
-                )
-            else:
-                gl.glUniform1i(
-                    gl.glGetUniformLocation(program, "material"),
-                    material_id(drawing.profile.material),
-                )
-                gl.glUniform4f(
-                    gl.glGetUniformLocation(program, "materialLighting"),
-                    *material_coefficients(drawing.profile.material),
-                )
-            gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
-            gl.glPolygonOffset(1.0, 1.0)
-            for piece in drawing.pieces:
-                if piece.mesh.opacity < 0.999999:
-                    continue
-                handles, count, _ = self.buffer(piece)
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, handles[0])
-                gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, handles[1])
-                gl.glVertexPointer(3, gl.GL_FLOAT, 36, c_void_p(0))
-                gl.glNormalPointer(gl.GL_FLOAT, 36, c_void_p(12))
-                gl.glColorPointer(3, gl.GL_FLOAT, 36, c_void_p(24))
-                gl.glDrawElements(
-                    gl.GL_TRIANGLES, count, gl.GL_UNSIGNED_INT, c_void_p(0)
-                )
-            gl.glDisable(gl.GL_POLYGON_OFFSET_FILL)
-            if drawing.profile.edges != "none":
-                program = self.program("edge")
-                gl.glUseProgram(program)
-                gl.glUniform1i(
-                    gl.glGetUniformLocation(program, "creases"),
-                    drawing.profile.edges == "edges",
-                )
-                gl.glUniform3f(
-                    gl.glGetUniformLocation(program, "edgeColor"), *drawing.edge_color
-                )
-                gl.glDisableClientState(gl.GL_COLOR_ARRAY)
-                gl.glEnableClientState(gl.GL_TEXTURE_COORD_ARRAY)
-                gl.glUniform1f(
-                    gl.glGetUniformLocation(program, "edgeWidth"),
-                    drawing.profile.edge_width,
-                )
-                gl.glUniform2f(
-                    gl.glGetUniformLocation(program, "viewportSize"),
-                    float(viewport[2]),
-                    float(viewport[3]),
-                )
-                gl.glDepthMask(False)
-                for piece in drawing.pieces:
-                    if not len(piece.edges):
-                        continue
-                    handles, count, _ = self.buffer(piece, edges=True)
-                    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, handles[0])
-                    gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-                    gl.glVertexPointer(3, gl.GL_FLOAT, 40, c_void_p(0))
-                    gl.glNormalPointer(gl.GL_SHORT, 40, c_void_p(12))
-                    gl.glClientActiveTexture(gl.GL_TEXTURE0)
-                    gl.glTexCoordPointer(3, gl.GL_SHORT, 40, c_void_p(18))
-                    gl.glClientActiveTexture(gl.GL_TEXTURE1)
-                    gl.glEnableClientState(gl.GL_TEXTURE_COORD_ARRAY)
-                    gl.glTexCoordPointer(4, gl.GL_FLOAT, 40, c_void_p(24))
-                    gl.glDrawArrays(gl.GL_QUADS, 0, count)
-                gl.glClientActiveTexture(gl.GL_TEXTURE0)
+            if drawing.raster_image is not None or any(
+                p.mesh.opacity >= 0.999999 for p in drawing.pieces
+            ):
+                self.hatch.draw(self, drawing, modelview, projection, viewport)
             if (
                 self.show_selection
                 and drawing.selected is not None
@@ -284,7 +242,7 @@ class Pool:
                 gl.glUseProgram(program)
                 gl.glUniform1i(
                     gl.glGetUniformLocation(program, "material"),
-                    material_id("nolighting"),
+                    -1,
                 )
                 gl.glUniform4f(
                     gl.glGetUniformLocation(program, "materialLighting"),

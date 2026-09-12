@@ -1,9 +1,9 @@
 """Isolated real-PyMOL validation in addition to geometric unit tests."""
 
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +15,7 @@ def test_real_pymol_headless_lifecycle(tmp_path):
         capture_output=True,
         text=True,
         timeout=180,
+        check=False,
     )
     if result.returncode == 77:
         pytest.skip("Real PyMOL is unavailable")

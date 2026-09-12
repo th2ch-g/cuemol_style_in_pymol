@@ -1,9 +1,9 @@
 """Deterministic real-GUI performance checks for cuemol_style."""
 
-from copy import deepcopy
 import json
 import resource
 import sys
+from copy import deepcopy
 from time import perf_counter
 from unittest.mock import patch
 
@@ -14,6 +14,7 @@ def benchmark(cmd, widget, pump, output, style, report, structure=None):
     from chempy.models import Indexed
     from OpenGL import GL as gl
     from pymol.Qt import QtWidgets
+
     from cuemol_style_in_pymol.controller import manager_for
 
     print("Preparing the 500-residue / 100-state benchmark", flush=True)
@@ -152,6 +153,7 @@ def benchmark(cmd, widget, pump, output, style, report, structure=None):
         "mesh_cache_mib": entry.nbytes / 1024**2,
         "native_cgo_mib": entry.cgo_nbytes / 1024**2,
         "gpu_cache_mib": manager.pool.bytes / 1024**2,
+        "framebuffer_mib": manager.pool.hatch.bytes / 1024**2,
         "rotation_fps": rotation_fps,
         "state_switch_fps": playback_fps,
         "movie_drawn_states_per_second": len(seen) / movie_seconds,

@@ -5,11 +5,11 @@ an ignored directory. No network access or user startup files are required.
 """
 
 import argparse
+import json
+import sys
 from contextlib import contextmanager
 from io import BytesIO
-import json
 from pathlib import Path
-import sys
 from time import monotonic, perf_counter, sleep
 from unittest.mock import patch
 
@@ -111,6 +111,7 @@ def registration_checks(cmd, report):
 
 def headless_checks(cmd, output, style, report):
     from pymol import CmdException
+
     from cuemol_style_in_pymol import export, geometry
     from cuemol_style_in_pymol.controller import manager_for
     from cuemol_style_in_pymol.presets import PROFILES
@@ -380,6 +381,7 @@ def gui_checks(cmd, widget, pump, output, style, report, structure):
     from OpenGL import GL as gl
     from pymol.Qt import QtCore, QtGui, QtWidgets
     from PyQt5.QtTest import QTest
+
     from cuemol_style_in_pymol.controller import manager_for
     from cuemol_style_in_pymol.export import view_matrix
     from cuemol_style_in_pymol.picking import hit_at

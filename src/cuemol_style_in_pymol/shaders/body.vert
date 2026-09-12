@@ -1,6 +1,7 @@
 #version 120
 varying vec3 normalEye;
 varying vec3 positionWorld;
+varying vec3 positionEye;
 varying vec3 baseColor;
 void main() {
     vec4 eye = gl_ModelViewMatrix * gl_Vertex;
@@ -8,5 +9,6 @@ void main() {
     gl_ClipVertex = eye;
     normalEye = normalize(gl_NormalMatrix * gl_Normal);
     positionWorld = gl_Vertex.xyz;
+    positionEye = eye.xyz;
     baseColor = gl_Color.rgb;
 }

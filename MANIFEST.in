@@ -1,3 +1,5 @@
-recursive-include tests *.py
+recursive-include tests *.py *.cjs
+recursive-include native *.cpp *.h *.md
+include setup.py
 recursive-include docs *.md *.png
 prune docs/_build

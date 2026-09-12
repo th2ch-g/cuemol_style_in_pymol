@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=77", "pybind11>=2.13,<4"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,11 +9,11 @@ description = "CueMol-inspired molecular geometry and interactive materials for 
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-license-files = ["LICENSE"]
-dependencies = ["numpy>=1.24", "scipy>=1.10", "PyOpenGL>=3.1.7,<4"]
+license-files = ["LICENSE", "native/edtsurf/README.md", "native/edtsurf/CommonPara.h"]
+dependencies = ["numpy>=1.24", "scipy>=1.10", "PyOpenGL>=3.1.7,<4", "Pillow>=9"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "Pillow>=9"]
+test = ["pytest>=8"]
 
 [project.urls]
 Repository = "https://github.com/th2ch-g/cuemol_style_in_pymol"

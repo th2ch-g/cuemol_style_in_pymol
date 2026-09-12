@@ -1,8 +1,8 @@
 """Render README gallery images with a separate real PyMOL Qt process."""
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 from time import monotonic, sleep
 from urllib.request import urlopen
 
@@ -24,9 +24,10 @@ def main():
         ) as response:
             structure.write_bytes(response.read())
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    import pymol
+
     from cuemol_style_in_pymol import cuemol_style
     from cuemol_style_in_pymol.presets import PROFILES
-    import pymol
 
     pymol.invocation.options.show_splash = 0
     from pmg_qt.pymol_qt_gui import PyMOLApplication, PyMOLQtGUI

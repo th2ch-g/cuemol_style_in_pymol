@@ -4,7 +4,7 @@
 
 `cuemol_style_in_pymol` is a standalone package that adds molecular
 geometry and live GPU materials to PyMOL. It requires PyMOL 3.1 with Qt,
-NumPy, SciPy, and PyOpenGL, and a compatibility OpenGL 2.1 / GLSL 1.20
+NumPy, SciPy, PyOpenGL, and Pillow, and a compatibility OpenGL 2.1 / GLSL 1.20
 context. `pixi install` installs the development environment, including
 PyMOL. CueMol and mdtbx are not required. PyMOL's source code and standard
 commands are unchanged.
@@ -37,18 +37,18 @@ help cuemol_style
 
 The default named view is `cuemol`. Applying another style with the same
 name replaces that view. `richardson` uses thin ribbons, sheet arrows,
-lighter helix undersides, colored-pencil hatching, and black silhouette/crease lines.
+lighter helix undersides, colored-pencil hatching, and black contour lines.
 Rotation and zoom update the GPU rendering immediately.
 
-The `richardson` GPU shader follows CueMol 3's Richardson tone recipe:
-warm paper, three irregular pencil layers at 55, -35, and 80 degrees,
-pigment-colored strokes, and unmarked highlights. Tone depends on the
-surface normal and viewing direction. Helix outside faces retain the base
-pigment; inside faces are lighter. The live shader filters a fine pencil
-lattice using CueMol's default 3x ink-sampling scale. Independent procedural
-noise and the omission of Umbreon's occlusion, depth fog, and screen-space
-stroke-edge pass make this an interactive approximation. The material and
-outline audit below records the matched parameters and remaining differences.
+The `richardson` pass uses warm paper, three pencil layers at 55, -35, and
+80 degrees, pigment-colored strokes, and unmarked highlights. Flat helix
+undersides are lighter; rounded rails retain their pigment. Normals and
+pigments are rasterized at 3x, then a native sampler evaluates the reference
+hash/noise, stroke envelopes, and per-sample layer multiplication. Tone includes
+depth fog. Bounded render tiles prevent oversized framebuffer allocations.
+Contours are extracted from the visible depth/normal image, traced across pixel
+boundaries, joined at occlusion junctions, smoothed, and rasterized as round
+bands. Internal triangulation edges do not participate in contour extraction.
 
 ## Styles and controls
 
@@ -82,7 +82,9 @@ uses helix cylinders; `ribbon` follows the backbone. Quality is `low`,
 and memory use.
 
 `edge` accepts `auto`, `none`, `edges`, `silhouette`, `thin`,
-`normal`, or `thick`. `edges` includes sharp visible creases.
+`normal`, or `thick`. `edges` includes self-occlusion contours; `silhouette`
+keeps outer contours. Crease lines are disabled, matching the current
+reference exporter's default crease limit.
 `edge_width` is in angstroms, with a one-pixel minimum in GPU images;
 `edge_color` accepts a PyMOL color. `transparency=keep` preserves the
 source representation's opacity; a number from 0 to 1 overrides it.
@@ -130,7 +132,9 @@ the selection. Pink markers identify selected source atom positions.
 Dragging retains native rotation/movement. Native opaque geometry blocks
 clicks on custom geometry behind it. Picking requires the Qt GUI.
 
-All loaded states are prepared before playback. Global state changes,
+All loaded states' base meshes are prepared before playback. Transparent
+material samples are rebuilt outside drawing callbacks when the camera,
+viewport, fog settings, or active state changes. Global state changes,
 movie frame-to-state mappings, object state overrides, and `all_states`
 are supported. Coordinate, bond, color, secondary-structure, transparency,
 or state-count edits require `refresh`. To change the native representation
@@ -162,169 +166,240 @@ expensive to prepare. `cuemol_style list` reports preparation time and
 mesh/native CGO storage for each active view. Retaining ray geometry for all
 states increases preparation time, memory use, and saved session size.
 
+The separate render tile uses at most about 126 MiB of GPU attachments plus
+temporary CPU arrays. Contours use a full-view 3x depth/normal image to keep
+chain connectivity independent of tile boundaries. Native camera samples can
+be larger than the base mesh: each covered 1/3-pixel sample uses two triangles. Inactive states
+return to coarse fallback CGO instead of accumulating dense samples. Exceeding
+`cache_mb` reports an error without silently reducing quality.
+
 ## Image export
 
 ```text
 ray 2400, 1800
 png figure_ray.png
-png figure_ray.png, width=2400, height=1800, ray=1
 cuemol_style png, filename=figure.png, width=2400, height=1800
-cuemol_style ray, filename=figure_ray.png, width=2400, height=1800
+cuemol_style ray, filename=figure_ray.png, width=640, height=480
 ```
 
-Standard PyMOL `ray` and `png, ray=1` work directly, including in
-headless mode. Opaque meshes have a retained CGO using PyMOL's ray-only
-triangle opcode. These triangles do not draw in OpenGL or interfere with
-picking. Transparent meshes already have native CGO and are not duplicated.
-Every prepared state has matching ray geometry; global state and movie
-frame changes take effect immediately. Source object visibility and
-per-object state overrides use the same Qt synchronization as the live
-view. Run `cuemol_style refresh` after changing those settings in headless
-mode, or before an immediate ray command that cannot wait for the Qt timer.
+Standard PyMOL `ray` and `png, ray=1` use retained native geometry for every
+prepared state, including in headless mode. Opaque meshes use the ray-only
+triangle opcode, which does not draw in OpenGL or interfere with picking.
+Transparent geometry already has native CGO and is not duplicated. Standard
+ray uses coarse molecular-space material samples, an averaged Richardson tone,
+and the user's PyMOL lighting. Refresh after source visibility or object-state
+changes in headless mode, or before a ray command that cannot wait for the Qt
+maintenance timer.
 
-The two `cuemol_style` export operations save the complete visible scene
-and require a filename. `png` captures the GPU appearance and requires
-the Qt GUI. `ray` builds temporary CGO geometry for the current state and
-camera, adding explicit silhouette/crease lines and camera-dependent
-material samples. It also works in headless PyMOL. Export restores
-visibility, playback, and temporary settings even if rendering fails.
-Selection markers are omitted from exports.
+The dedicated `png` operation requires Qt, omits selection markers, preserves
+the current background, and renders opaque bodies in bounded tiles at 3x.
+Transparent renderer groups use complete, opaque GPU layer passes with prepared
+color/depth textures; bodies and contour ink are sampled together. This avoids
+native CGO's extra lighting and fog on exported ink. The passes use the same 3x
+grid and are downsampled before display-space group blending. Transfer buffers,
+pixel storage, framebuffers, viewport, matrices, shader programs, and GL
+attributes are restored.
 
-Opaque bodies use independent GPU shaders. Transparent bodies use native
-CGO with lighting baked into vertex colors so that PyMOL can composite
-them with native translucent objects. Their lighting is fixed in molecular
-coordinates during rotation. Standard ray uses the same molecular-space
-material samples and the user's PyMOL lighting/outline settings. The
-dedicated ray operation instead uses camera-space samples and cylindrical
-outline geometry. Both ray paths differ from the GPU shading and line
-appearance. For Richardson, ray and transparent CGO use the average
-colored-pencil coverage as vertex tones; individual hatching strokes are
-available in opaque GPU rendering and `cuemol_style png`. Wood, stone, and
-metal are procedural approximations; they do not reproduce CueMol's
-POV-Ray textures exactly. `shadow` is a flat shading material, not a
-scene-shadow generator.
+The dedicated `ray` operation builds camera-dependent pixel CGO, including
+individual pencil strokes and the same joined screen contours as GPU output.
+Each covered sample has one front-facing quad at its visible depth. Hidden
+triangles and separate contour cylinders cannot accumulate extra opacity.
+Ray uses the same 3x grid and group compositing, including in headless mode.
+To avoid shading the samples twice, it temporarily sets
+neutral lighting and disables ray shadows/fog for the **whole exported scene**.
+Unmanaged objects in that image therefore also use neutral lighting. All
+settings, visibility, and playback are restored afterward, including on failure.
+Use GPU PNG when native objects must retain their existing lighting.
 
-Object transformation matrices, stereo/VR picking, editing atoms
-by dragging, and headless interactive GPU rendering are outside the
-supported interface; apply coordinate transforms to source atoms and
-refresh when needed.
+Live transparent bodies use native CGO for integration with standard PyMOL
+objects. Pieces sharing an opacity are sampled as one visible surface, so
+internal overlaps and contour ink contribute opacity once. Colors and fog
+compensation follow the camera, while source transparency settings are preserved.
+The live native pass retains PyMOL's inter-object sorting and blend rules.
+
+Dedicated PNG/ray exports use Umbreon's renderer-group formula instead:
+`(1 - sum(alpha_i)) * B + sum(alpha_i * L_i)`, where `B` excludes all transparent
+groups and `L_i` includes the background scene plus group `i` rendered opaque.
+RGB is accumulated in sRGB-encoded space after shading, contours, and 3x
+downsampling; coverage alpha is accumulated linearly. Background weights can
+be negative when the group opacity sum exceeds one. Unmanaged geometry is
+present in each pass, so occlusion against objects behind transparent groups
+is included. Temporary objects and visibility are restored on failure.
+
+Object transformation matrices, stereo/VR picking, editing atoms by dragging,
+and headless interactive GPU rendering are outside the supported interface.
+Apply coordinate transforms to source atoms and refresh when needed.
 
 ## Representation audit
 
-Geometry defaults were checked against [CueMol 3173d8a](https://github.com/CueMol/cuemol2/tree/3173d8af62e211dd37b943ee53b3d6a632e6b5d7),
-including `default_style.xml`, `TubeSection`, `RibbonRenderer`,
-`Ribbon2Renderer`, `NARenderer`, and the atomic renderers. Richardson
-tone parameters were checked against [Umbreon bf75c8a](https://github.com/CueMol/umbreon/tree/bf75c8adc05ed70a1344afbd718bcaab651c1070).
-These are source-level checks; no claim of pixel equality is made.
+The reference definitions are [CueMol 3173d8a](https://github.com/CueMol/cuemol2/tree/3173d8af62e211dd37b943ee53b3d6a632e6b5d7)
+and [Umbreon bf75c8a](https://github.com/CueMol/umbreon/tree/bf75c8adc05ed70a1344afbd718bcaab651c1070).
+Both numerical definitions and actual exports are compared. The target is
+the current Umbreon direct renderer, with GI, AO, and cast shadows disabled.
+Legacy OpenGL, POV-Ray procedural materials, and GI rendering are different
+reference modes; pixel equality across these backends is not claimed.
 
-- `ribbon` and `round_ribbon`: helix half-width 1.2, sheet half-width
-  1.4, half-thickness 0.2, coil radius 0.35 angstrom. Axes use natural cubic
-  splines with chord-length knots and 50 percent sheet-pivot smoothing.
-  Sheet-arrow expansion is 1.8, with gamma 2.2 or 1.2 respectively.
-- `fancy_ribbon` and `richardson`: helix half-width 1.3, circular rail
-  radius 0.2, sharpness 0.3, sheet half-width 1.2, and coil radius 0.25.
-  Helix backs and sheet side walls reduce HSV saturation by 0.4. Sheet
-  arrows expand by 1.6 with gamma 1.0.
-- `cartoon` and `round_cartoon`: penalized natural-spline helix axes
-  use rho 3.0; cylinder radius is the mean pivot-to-axis distance plus
-  0.2. Sheet half-width/thickness are 1.4/0.2, with smoothing rho 3.0 or
-  1.0 respectively; coil radius is 0.2. Sheet arrows use expansion 1.8
-  and gamma 1.0. Junction and endpoint constraints are approximations.
-- `tube`: radius 0.35 with a natural cubic axis. `nucleic`: P-atom
-  pivots, an elliptical backbone with half-axes 1.25/0.5, and base-pair
-  rods of radius 0.5. Base pairs are inferred from compatible in-plane
-  hydrogen-bond contacts. Pair assignment and modified-base support can
-  differ from CueMol's residue topology and base-pair metadata.
-- `ballstick`: every atom radius 0.3 and bond radius 0.2. `sticks`:
-  atom and bond radius 0.2. Bond colors split sharply at the midpoint.
-  `cpk`: H/C/N/O/S/P radii 1.2/1.7/1.55/1.52/1.8/1.8, other elements
-  1.7. Mesh tessellation depends on this plugin's quality setting.
-- `surface`: solvent-excluded surface with a 1.4-angstrom probe and
-  the same element radii. PyMOL's surface mesher differs from CueMol's
-  EDTSurf/MeshMS implementation, so triangulation and fine details differ.
+| Geometry | Reference dimensions and construction |
+| --- | --- |
+| `ribbon`, `round_ribbon` | Helix half-width 1.2, sheet half-width 1.4, half-thickness 0.2, coil radius 0.35 A. Natural chord-length splines, 50% sheet-pivot smoothing, transported frames, slope normals, gamma 2.2 junctions. Arrow expansion 1.8; arrow gamma 2.2/1.2. |
+| `fancy_ribbon`, `richardson` | Helix half-width 1.3, rail radius 0.2, sharpness 0.3, sheet half-width 1.2, coil radius 0.25 A. HSV saturation reduction 0.4 only on flat helix backs and sheet sides. Arrow expansion 1.6, gamma 1.0. |
+| `cartoon`, `round_cartoon` | Penalized natural splines including flanking residues. Helix rho 3.0, radius = mean pivot-axis distance + 0.2 A. Sheet half-width/thickness 1.4/0.2 A, rho 3.0/1.0, facing-vector rho 5.0. Coil radius 0.2 A, rho -1/-2, weighted anchors and sheet-end derivative support. |
+| `tube`, `nucleic` | Tube radius 0.35 A. Nucleic P-atom backbone half-axes 1.25/0.5 A, base-pair rods radius 0.5 A. Spline terminal caps use five hemispherical rings. Compatible in-plane hydrogen bonds determine base pairs. |
+| `ballstick`, `sticks`, `cpk` | Ball/stick radii 0.3/0.2 A; sticks use 0.2/0.2 A. CPK H/C/N/O/S/P radii 1.2/1.7/1.55/1.52/1.8/1.8 A, other elements 1.7 A. Bond colors split at the midpoint. Dense spheres/cylinders approximate analytic primitives. |
+| `surface` | Standalone EDTSurf, probe 1.4 A, reference radii, voxel atom ownership, distance transform, marching cubes, one smoothing pass, and reference normals. Quality low/medium/high uses detail 3/6/10. |
 
-Adjoining secondary-structure sections share a boundary plane; a sheet
-arrow keeps its narrow tip when followed directly by a helix cylinder.
-Source coordinates and secondary-structure assignments are unchanged.
+The EDTSurf wrapper corrects an uninitialized smoothing flag and a radius-index
+mismatch that excluded phosphorus. Its original permission notice and local
+changes are recorded in [the vendored-source notice](../native/edtsurf/README.md).
+CueMol and its source tree are not runtime dependencies. Building a source
+distribution requires a C++17 compiler and pybind11; wheels contain the extension.
 
-Spline frames, chain-break detection, section transitions, caps, and
-surface ownership use this plugin's implementation. Matching default
-dimensions does not make every molecular representation identical.
-Maps and labels retain their existing native PyMOL representation.
+Ribbon junctions use residue-local parameter tables, analytic scale derivatives,
+flat arrow shoulders, fixed section shapes, and reference terminal caps. Remaining
+geometric differences include mesh tessellation, chain-break and alternate-location
+choices, and modified-base topology. Ribbon junctions share a boundary plane.
+Cartoon elements are fitted separately as in
+Ribbon2Renderer, with sheet tips kept narrow at direct helix junctions. Maps and
+labels remain native; source atoms, colors, bonds, and secondary structure are
+unchanged.
 
 ## Material and outline audit
 
-The OpenGL material coefficients match CueMol's `default_style.xml`:
+The PBR values follow `UmbreonDisplayContext.cpp`. Ambient is evaluated against
+unit ambient light. The normalized key direction is `(1,1,1)`, intensity 0.52;
+the camera-axis fill is 0.78 with no specular highlight. GGX distribution,
+correlated Smith masking, and Schlick Fresnel are shared by GPU/native samples.
 
-| Material | Ambient | Diffuse | Specular | Shininess |
-| --- | ---: | ---: | ---: | ---: |
-| `default` | 0.2 | 0.8 | 0.0 | 32.0 |
-| `shadow` | 0.75 | 0.0 | 0.0 | 0.0 |
-| `nolighting` | 1.0 | 0.0 | 0.0 | 0.0 |
-| `matte` | 0.3 | 0.6 | 0.0 | 32.0 |
-| `toon1` | 0.0 | 0.85 | 0.0 | 0.0 |
-| `toon2` | 0.0 | 0.85 | 0.0 | 32.0 |
-| `diff_metal`, `spec_metal` | 0.2 | 0.5 | 0.7 | 76.8 |
+| Material | Ambient | Diffuse | Metallic | Roughness | Specular | Reflection |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `default` | .20 | .80 | 0 | .3742032 | .40 | 0 |
+| `matte` | .30 | .80 | 0 | .5 | 0 | 0 |
+| `diff_metal` | .35 | .30 | 1 | .5491005 | .80 | .10 |
+| `spec_metal` | .15 | .60 | 1 | .3742032 | .80 | .65 |
+| `metallic_chrome` | .20 | .80 | 1 | .05 | .50 | 0 |
+| `metallic_copper` | .20 | .80 | 1 | .15 | .50 | 0 |
+| `stone35` | .20 | .80 | 0 | .85 | .25 | 0 |
+| `wood31`, `wood14scl2` | .20 | .80 | 0 | .45 | .50 | 0 |
 
-GPU and native material samples share these coefficients. The camera-space
-light direction is `(1, 1, 1.5)`, following CueMol's OpenGL lighting source.
-`toon1` and `toon2` consequently have the same diffuse appearance, as do
-`diff_metal` and `spec_metal`. CueMol's POV-Ray definitions distinguish those
-pairs using different finishes; this renderer does not evaluate POV-Ray
-`brilliance`, `phong`, or `F_MetalA`/`F_MetalD`. CueMol's backend lighting,
-occlusion, shadows, and display transfer can still produce different images.
+Metal pigments remain the molecular colors. Reflection uses the background;
+zero explicit reflection falls back to the PBR F0 environment term. Wood and
+stone use the current backend's material intent, without legacy POV-Ray patterns.
+`toon1` uses diffuse .8 with brilliance 0; `toon2` uses ambient .3, diffuse .5,
+and Phong 10000 with size 50. `shadow` is ambient .75 and `nolighting` is 1.
+The toon and metal pairs therefore have distinct appearances. Global
+illumination, ambient occlusion, cast shadows, and scene inter-reflections are
+not implemented.
 
-`metallic_chrome`, `metallic_copper`, `stone35`, `wood31`, and `wood14scl2`
-approximate the corresponding POV-Ray texture names. Their procedural texture
-patterns and reflection bands are this plugin's own implementation; those
-settings and pixels are not identical to CueMol's POV-Ray texture library.
+`thin`, `normal`, and `thick` widths are .03/.06/.15 A. Lines have a minimum
+full width of one output pixel, visibility testing, and depth fog. `outline`
+includes self-occlusion contours; `silhouette` suppresses interior contours.
+Crease lines are disabled. The screen classifier uses a 12-pixel depth gap,
+weak/strong contour hysteresis, normal continuity, and a mesh segment probe to
+reject connected folds. Chains shorter than four output pixels are filtered;
+continuous junction bars are reconnected before two Chaikin smoothing passes
+and .4-output-pixel simplification. Round bands use outside alignment with a
+half-output-pixel inner pad. GPU, transparent samples, and dedicated ray use
+this shared contour path, independent of the triangles' internal diagonals.
 
-The `thin`, `normal`, and `thick` outline widths are 0.03, 0.06, and
-0.15 angstrom, matching CueMol's named EgLine styles. `outline` enables
-silhouettes and sharp creases; `silhouette` enables silhouettes alone.
-The combined `richardson`, `toon1`, and `toon2` profiles select normal black
-edges. GPU edge extraction and its one-pixel minimum, and cylindrical ray
-outlines, differ from CueMol's image-space stroke rendering. CueMol's raw
-renderer default of 0.01 angstrom is separate from its named normal edge style.
-
-Richardson uses the same khaki and SteelBlue pigments, paper `(0.941, 0.925,
-0.867)`, layer angles `55/-35/80`, thresholds `0.92/0.62/0.34`, width fade `10`,
-ink scales `1/0.74/0.38`, dark-pressure floor `0.4`, and minimum contrast `0.15`.
-The configured spacing/width are `0.5/0.45` output pixels. With CueMol's default
-3x supersampling and its two-device-pixel minimum, the effective pitch is
-`2/3` output pixel. The live shader now uses that pitch and width, a nine-sample
-stroke filter, length/gap `50/5`, width jitter `0.45`, length jitter `0.5`,
-taper `0.35`, angle jitter `5` degrees, and paper tooth `0.15` at scale `3`.
-The shader's noise is independent; it shares the slow stroke envelope across
-the nine samples and averages each layer before multiplying the layers.
-Umbreon evaluates and multiplies them at every supersample. Occlusion and
-depth fog are also omitted. Highlights therefore remain bare paper, and the
-result is not a pixel-identical Umbreon render. Native ray/transparency use
-a fitted average coverage, about 0.256 per fully active pencil layer.
+Richardson uses paper `#F0ECDD`, angles 55/-35/80, thresholds .92/.62/.34,
+ink scales 1/.74/.38, pressure floor .4, and an absolute display-luma contrast
+minimum .15. At 3x, the effective pitch is 2/3 output pixel and full width is
+.45 pixel. Stroke length/gap are 50/5 pixels, width jitter .45, length jitter
+.5, taper .35, angle jitter 5 degrees, and paper tooth .15 at scale 3.
+Hash/noise and stroke coverage have independent numerical reference tests.
+Layers are multiplied at each supersample before averaging. The tone recipe
+uses diffuse .85, ambient .05, wrap .5, rim power 3.5, rim bias .35, white point
+1.2, gamma 2.4, and a highlight knee from .81 to .86. Only retained standard-ray
+geometry uses an averaged pencil approximation.
 
 ## Validation
 
-The standalone harness exercises every style in real PyMOL, restoration
-after failures, multiple states, session reload, Qt picking, rotation, and
-native/custom transparency. GUI mode also writes GPU and ray images for
-visual review. Run Python through the repository's pixi interpreter:
-
-```console
-$ uv run --no-project --python .pixi/envs/default/bin/python python \
-    tests/check_cuemol_style.py --output .cache/cuemol-headless
-$ uv run --no-project --python .pixi/envs/default/bin/python python \
-    tests/check_cuemol_style.py --gui --benchmark \
-    --output .cache/cuemol-gui
+```sh
+pixi install --locked
+pixi run check
+uv run --no-project --python .pixi/envs/default/bin/python python -m pytest tests -q
+uv run --no-project --python .pixi/envs/default/bin/python python tests/check_cuemol_style.py --gui --benchmark --output .cache/validation
+uv build --python .pixi/envs/default/bin/python
 ```
 
-The benchmark uses 500 residues and 100 synthetic states at a 1280 by 720
-viewport with medium-quality ribbons. It reports preparation time, CPU/GPU
-mesh storage, rotation speed, explicit state-switch speed, actual movie
-draw rate, and one-state surface preparation. The targets after preparation
-are 30 FPS rotation and 15 FPS playback; results depend on the GPU and input
-geometry. Generated images and reports under `.cache` are ignored by Git.
+For image comparison, supply a protein PDB and explicit paths to a compatible
+CueMol Node module and its configuration. These are validation-only inputs.
 
-The geometry and names are inspired by the
-[CueMol ribbon renderer](https://cuemol.github.io/cuemol2_docs/cuemol2/RibbonRenderer/)
-and CueMol style definitions. This plugin implements its own mesh generation
-and rendering and has no runtime dependency on the CueMol source tree.
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python tests/audit_appearance.py \
+  --structure structure.pdb --output .cache/appearance \
+  --reference-module "$CUEMOL_MODULE" --reference-config "$CUEMOL_CONFIG"
+uv run --no-project --python .pixi/envs/default/bin/python python tests/compare_appearance.py .cache/appearance
+```
+
+The audit covers all 26 profiles and explicit sticks (eight geometries). It
+aligns exact coordinates, atom colors, secondary structure, orthographic or
+perspective cameras, image dimensions, and renderer properties. Richardson is
+compared on the same opaque paper background in both engines; other profiles
+use white. The plugin itself never changes the user's background. Re-run with
+`--angle`, `--zoom`, `--perspective`, `--transparency`, or `--ray`. Runtime version,
+module digest, manifests, logs, images, numerical differences, and contact sheets
+are stored in the ignored output directory. Foreground IoU includes shading;
+it is not a pure geometric accuracy measure. No image registration is applied.
+
+The image audit used CueMol 2.3.13.523 (`aeacb41`) and the definitions above.
+The relevant renderer changes from that build to `3173d8a` add picking names;
+the direct exporter, material table, EDTSurf, geometry dimensions, and spline
+calculations used here are unchanged. The runtime digest is saved separately
+from the source revision so the two are not confused.
+
+Representative measured errors are below. MAE is the mean absolute RGB channel
+difference on the union of both foreground masks, in 0..255 units; the blurred
+column uses a two-pixel Gaussian. CueMol, GPU PNG, and dedicated ray use 3x
+sampling. Protein cases use 1CRN at `medium` quality, and the same camera,
+colors, and secondary structure.
+
+| Export and condition | Profile | Foreground IoU | MAE | Blurred MAE |
+| --- | --- | ---: | ---: | ---: |
+| GPU, opaque, 640x480 | `surface` | 1.0000 | 0.06 | 0.04 |
+| GPU, opaque, 640x480 | `cartoon` | 0.9987 | 0.56 | 0.30 |
+| GPU, opaque, 640x480 | `default` | 0.9998 | 0.25 | 0.16 |
+| GPU, opaque, 640x480 | `richardson` | 0.9967 | 0.72 | 0.18 |
+| GPU, perspective, rotated -45 degrees, zoom .8, 640x480 | `richardson` | 0.9893 | 3.28 | 0.51 |
+| GPU, transparency .25, 320x240 | `surface` | 0.9986 | 0.37 | 0.22 |
+| GPU, transparency .25, 320x240 | `richardson` | 0.9889 | 2.29 | 0.41 |
+| GPU, transparency .65, rotated 37 degrees, zoom 1.2, 320x240 | `richardson` | 0.9918 | 1.30 | 0.33 |
+| Dedicated ray, opaque, 320x240 | `default` | 0.9963 | 0.72 | 0.47 |
+| Dedicated ray, opaque, 320x240 | `surface` | 0.9985 | 0.46 | 0.41 |
+| Dedicated ray, opaque, 320x240 | `richardson` | 0.9898 | 2.47 | 0.52 |
+| Dedicated ray, transparency .4, 320x240 | `richardson` | 0.9913 | 2.18 | 0.42 |
+| Dedicated ray, perspective, rotated -45 degrees, zoom .8, 320x240 | `richardson` | 0.9875 | 4.19 | 0.99 |
+
+Contour placement and renderer-group blending use the shared screen pipeline
+described above. The table reports the measured image errors for these cameras
+and scenes; it does not establish pixel equality for arbitrary inputs.
+
+Run the additional GUI regression checks with:
+
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python tests/check_appearance_gui.py --output .cache/appearance-regression
+```
+
+The GUI harness checks 2400x1800 export, native/custom transparency, picking,
+state mapping, session reload, and failure restoration. The additional regression
+suite covers twelve sheet rotation angles, tiled contour continuity, transfer-buffer
+restoration, and overlapping transparent groups. The GPU/ray overlap comparison
+measured a foreground MAE of 0.23/255. The benchmark uses 500
+residues and 100 synthetic states at 1280x720, recording preparation, warmup,
+CPU/GPU storage, peak process RSS, rotation FPS, explicit state-switch FPS,
+and actual movie draw rate. Screen contours, dense material sampling, and pencil
+evaluation add work for each camera or state change. Reproducible images, builds,
+and reports stay ignored; published README
+gallery PNGs are versioned and regenerated with `tests/render_gallery.py`.
+
+The measured 500-residue/100-state run used PyMOL 3.1.0 on Apple M4 with the
+OpenGL 2.1 compatibility context, `medium` quality, and a 1280x720 viewport.
+The input repeated a generated peptide with deterministic state displacements.
+Preparation took 38.52 s and warmup 62.68 s. Rotation achieved 1.86 FPS,
+explicit state switching 1.78 FPS, and movie drawing 1.78 states/s. The 30/15
+FPS targets were not met. Mesh, native CGO, and GPU vertex storage were 465.32,
+1469.86, and 252.03 MiB; peak process RSS was 3286.16 MiB, including the preceding
+GUI export checks. The last framebuffer tile occupied 26.47 MiB (the per-tile
+bound is 126 MiB). The separate surface preparation took 0.090 s and produced
+1.20 MiB of mesh data. These measurements describe this synthetic workload on
+one host, not a minimum performance guarantee.

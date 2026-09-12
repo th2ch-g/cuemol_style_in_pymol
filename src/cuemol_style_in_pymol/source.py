@@ -1,12 +1,11 @@
 """Read-only molecular snapshots and reversible representation changes."""
 
-from dataclasses import dataclass
-from copy import deepcopy
 from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import dataclass
 from uuid import uuid4
 
 import numpy as np
-
 
 # PyMOL 3.x representation bits, independent of user-visible object types.
 REPS = {"sticks": 1, "cpk": 2, "surface": 4, "cartoon": 32, "ribbon": 64}

@@ -1,7 +1,7 @@
 """Managed views with reversible native state and session restoration."""
 
-from dataclasses import dataclass, field
 import re
+from dataclasses import dataclass, field
 from time import perf_counter
 
 import numpy as np
@@ -20,14 +20,12 @@ class Entry:
     object_settings: dict
     generated: list = field(default_factory=list)
     seconds: float = 0.0
+    sampling_seconds: float = 0.0
 
     @property
     def nbytes(self):
         return sum(
-            p.mesh.nbytes + p.edges.nbytes
-            for ds in self.drawings.values()
-            for d in ds
-            for p in d.pieces
+            p.mesh.nbytes for ds in self.drawings.values() for d in ds for p in d.pieces
         )
 
     @property
@@ -149,19 +147,19 @@ class Manager:
             if not np.isfinite(transparency) or not 0 <= transparency <= 1:
                 raise ValueError("transparency must be between 0 and 1")
         edge_rgb = tuple(self.cmd.get_color_tuple(edge_color))
-        options = dict(
-            style=style,
-            selection=selection,
-            representation=representation,
-            color=color,
-            quality=quality,
-            name=name,
-            edge=edge,
-            edge_width=edge_width,
-            edge_color=edge_color,
-            transparency=transparency,
-            cache_mb=cache_mb,
-        )
+        options = {
+            "style": style,
+            "selection": selection,
+            "representation": representation,
+            "color": color,
+            "quality": quality,
+            "name": name,
+            "edge": edge,
+            "edge_width": edge_width,
+            "edge_color": edge_color,
+            "transparency": transparency,
+            "cache_mb": cache_mb,
+        }
         old = self.entries.get(name)
         if old is None and name in self.cmd.get_names("all"):
             raise ValueError(f"An object or selection named {name!r} already exists")
@@ -199,13 +197,8 @@ class Manager:
                             )
                             mesh.opacity = opacity
                             if len(mesh.faces):
-                                edges = (
-                                    mesh.edge_data()
-                                    if profile.edges != "none"
-                                    else np.empty((0, 12), np.float32)
-                                )
-                                pieces.append(Piece(mesh, subset.atoms, edges))
-                                cache_size += mesh.nbytes + edges.nbytes
+                                pieces.append(Piece(mesh, subset.atoms))
+                                cache_size += mesh.nbytes
                                 if cache_size > budget:
                                     raise ValueError(
                                         "Prepared geometry exceeds cache_mb; lower quality or increase cache_mb"
@@ -216,8 +209,12 @@ class Manager:
                                 profile,
                                 edge_rgb,
                                 self.pool,
+                                sample_budget=budget,
                                 anchors=frame.coords,
                                 keys=tuple((a.model, a.index) for a in frame.atoms),
+                                background=tuple(
+                                    self.cmd.get_color_tuple(self.cmd.get("bg_rgb"))
+                                ),
                             )
                         )
                 if (
@@ -362,7 +359,112 @@ class Manager:
                                 else self.cmd.disable
                             )(target)
                     entry.object_settings[obj] = current
+        try:
+            self.prepare_view()
+        except Exception as exc:  # noqa: BLE001 - GUI callback boundary.
+            for drawing in self.active_drawings():
+                drawing.error = str(exc)
         self.update_selection()
+
+    def prepare_view(self, width=0, height=0, force=False, native=True):
+        if self.busy or self.widget is None:
+            return
+        from .raster import layers
+        from .sampling import camera, clipping
+
+        matrices = camera(self.cmd, width, height)
+        background = tuple(self.cmd.get_color_tuple(self.cmd.get("bg_rgb")))
+        view = self.cmd.get_view()
+        fog = (-view[11], -view[11] + (view[16] - view[15]) / 2)
+        native_fog = None
+        density = self.cmd.get_setting_float("fog")
+        if self.cmd.get_setting_int("depth_cue") and density != 0:
+            near, far = clipping(view)
+            start = near + (far - near) * self.cmd.get_setting_float("fog_start")
+            native_fog = (
+                start,
+                start + (far - start) / density if density > 1e-8 else far,
+            )
+        key = tuple(array.tobytes() for array in matrices) + (background, native_fog)
+        active = {id(d) for d in self.active_drawings()}
+        self.busy = True
+        try:
+            for entry in self.entries.values():
+                started = perf_counter()
+                budget = int(entry.options["cache_mb"] * 1024**2)
+                for index, drawings in enumerate(entry.drawings.values(), 1):
+                    for drawing in drawings:
+                        drawing.background = background
+                        drawing.fog = fog
+                        drawing.sample_matrices = matrices
+                        drawing.sample_budget = budget
+                        if not native:
+                            continue
+                        if id(drawing) not in active and drawing.sampled_bytes:
+                            values = []
+                            for piece in drawing.pieces:
+                                if piece.mesh.opacity < 0.999999:
+                                    values.extend(
+                                        export.cgo_mesh(piece, drawing.profile.material)
+                                    )
+                            self.cmd.load_cgo(
+                                values,
+                                f"{entry.name}_alpha_{index}",
+                                state=drawing.state,
+                                zoom=0,
+                            )
+                            self.cmd.set(
+                                "cgo_lighting", 0, f"{entry.name}_alpha_{index}"
+                            )
+                            drawing.sampled_bytes = 0
+                            drawing.sample_key = None
+                        if id(drawing) not in active or (
+                            not force and drawing.sample_key == key
+                        ):
+                            continue
+                        values = []
+                        for opacity, meshes in layers(drawing).items():
+                            if opacity < 0.999999:
+                                values.extend(
+                                    export.sampled_cgo(
+                                        drawing,
+                                        meshes,
+                                        matrices,
+                                        budget,
+                                        opacity,
+                                        native_fog,
+                                    )
+                                )
+                        if values:
+                            size = len(values) * 4
+                            base_alpha = sum(
+                                4 * (5 + 36 * len(p.mesh.faces))
+                                for p in drawing.pieces
+                                if p.mesh.opacity < 0.999999
+                            )
+                            if (
+                                entry.cgo_nbytes
+                                - max(drawing.sampled_bytes, base_alpha)
+                                + size
+                                > budget
+                            ):
+                                raise ValueError(
+                                    "Camera-dependent CGO exceeds cache_mb"
+                                )
+                            self.cmd.load_cgo(
+                                values,
+                                f"{entry.name}_alpha_{index}",
+                                state=drawing.state,
+                                zoom=0,
+                            )
+                            self.cmd.set(
+                                "cgo_lighting", 0, f"{entry.name}_alpha_{index}"
+                            )
+                            drawing.sampled_bytes = size
+                            entry.sampling_seconds = perf_counter() - started
+                        drawing.sample_key = key
+        finally:
+            self.busy = False
 
     def update_selection(self):
         names = [

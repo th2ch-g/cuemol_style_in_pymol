@@ -90,7 +90,7 @@ def attach(manager):
         def maintain(self):
             try:
                 manager.maintenance()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - GUI callback boundary.
                 self.timer.stop()
                 print(
                     f" cuemol_style: view maintenance stopped: {exc}; use refresh or reset."
@@ -139,7 +139,7 @@ def attach(manager):
             try:
                 select_atom(manager.cmd, atom, additive)
                 manager.update_selection()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - GUI callback boundary.
                 if not self.warned:
                     print(
                         f" cuemol_style: picking failed: {exc}; command-line selections remain available."
@@ -148,6 +148,13 @@ def attach(manager):
 
         def eventFilter(self, watched, event):
             if self.forwarding or self.closed or manager.busy:
+                return False
+            if event.type() == QtCore.QEvent.Paint:
+                try:
+                    manager.prepare_view()
+                except Exception as exc:  # noqa: BLE001 - GUI callback boundary.
+                    for drawing in manager.active_drawings():
+                        drawing.error = str(exc)
                 return False
             if event.type() in (
                 QtCore.QEvent.MouseButtonPress,
@@ -159,7 +166,7 @@ def attach(manager):
                 ):
                     try:
                         atom = self.hit(event)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - GUI callback boundary.
                         return False
                     if atom is not None:
                         # Hold only custom presses. Replaying a native click
@@ -176,12 +183,15 @@ def attach(manager):
                     QtWidgets.QApplication.sendEvent(widget, press)
                 finally:
                     self.forwarding = False
-            elif event.type() == QtCore.QEvent.MouseButtonRelease:
-                if self.press is not None and event.button() == QtCore.Qt.LeftButton:
-                    _, atom = self.press
-                    self.press = None
-                    self.pick(atom, bool(event.modifiers() & QtCore.Qt.ShiftModifier))
-                    return True
+            elif (
+                event.type() == QtCore.QEvent.MouseButtonRelease
+                and self.press is not None
+                and event.button() == QtCore.Qt.LeftButton
+            ):
+                _, atom = self.press
+                self.press = None
+                self.pick(atom, bool(event.modifiers() & QtCore.Qt.ShiftModifier))
+                return True
             return False
 
     return widget, Events()

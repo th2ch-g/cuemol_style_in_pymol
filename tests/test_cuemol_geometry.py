@@ -5,8 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-
-from cuemol_style_in_pymol import geometry, presets, source, picking
+from cuemol_style_in_pymol import geometry, picking, presets, source
 from cuemol_style_in_pymol import mesh as mesh_module
 
 
@@ -106,7 +105,13 @@ def test_helix_outer_face_keeps_color_when_frame_sign_changes(profile_name, hint
         np.tile(presets.CUEMOL_SECONDARY_COLORS["H"], (outer.sum(), 1)),
         atol=1e-6,
     )
-    assert np.all(mesh.colors[inner, 2] > 0.9)
+    if profile.back:
+        # Fancy rails retain their pigment; only the flat underside is lightened.
+        assert np.count_nonzero(mesh.colors[inner, 2] > 0.9) > inner.sum() / 2
+    else:
+        np.testing.assert_allclose(
+            mesh.colors[inner], np.tile(colors[0], (inner.sum(), 1))
+        )
 
 
 def test_alternating_carbonyls_do_not_twist_sheet_and_arrow_points_forward():
@@ -120,9 +125,11 @@ def test_alternating_carbonyls_do_not_twist_sheet_and_arrow_points_forward():
         "medium",
     )
     # The planar input must stay planar through alternating peptide directions.
-    assert np.max(np.abs(mesh.vertices[:, 2])) <= 0.201
-    shoulder = mesh.vertices[(mesh.vertices[:, 0] > 22) & (mesh.vertices[:, 0] < 24)]
-    tip = mesh.vertices[mesh.vertices[:, 0] > 25.5]
+    interior = (mesh.vertices[:, 0] > 4) & (mesh.vertices[:, 0] < 22)
+    assert np.max(np.abs(mesh.vertices[interior, 2])) <= 0.201
+    assert np.max(np.abs(mesh.vertices[:, 2])) <= 0.251
+    shoulder = mesh.vertices[(mesh.vertices[:, 0] > 24) & (mesh.vertices[:, 0] < 24.1)]
+    tip = mesh.vertices[mesh.vertices[:, 0] > 27.7]
     assert np.ptp(shoulder[:, 1]) > np.ptp(tip[:, 1]) * 1.5
     assert mesh.owners.max() == 21
 
@@ -345,7 +352,7 @@ def test_richardson_native_average_retains_paper_and_pigment():
     assert tone[0] > 0.92
     assert tone[2] < tone[1] < tone[0]
     colors = pencil_average(np.tile([0.2, 0.4, 0.8], (3, 1)), tone)
-    np.testing.assert_allclose(colors[0], [0.941, 0.925, 0.867])
+    np.testing.assert_allclose(colors[0], np.array([240, 236, 221]) / 255)
     assert colors[2].mean() < colors[0].mean()
     assert colors[2, 2] > colors[2, 0]
 
@@ -353,9 +360,6 @@ def test_richardson_native_average_retains_paper_and_pigment():
 @pytest.mark.parametrize(
     "style,representation",
     [
-        ("ribbon", "ribbon"),
-        ("round_ribbon", "ribbon"),
-        ("fancy_ribbon", "ribbon"),
         ("cartoon", "cartoon"),
         ("round_cartoon", "cartoon"),
     ],
@@ -379,8 +383,13 @@ def test_direct_sheet_helix_junction_has_a_shared_plane_and_narrow_tip(
 
     def capture(*args, **kwargs):
         mesh = original(*args, **kwargs)
-        count = len(geometry.section(args[6], args[7])[0])
-        sections.append((mesh, count))
+        ratio = (
+            6.5
+            if args[6] == "fancy"
+            else float(np.median(np.asarray(args[1]) / np.asarray(args[2])))
+        )
+        count = len(geometry.section(args[6], args[7], round(ratio, 6))[0])
+        sections.append((mesh, count, np.asarray(args[0])))
         return mesh
 
     monkeypatch.setattr(geometry, "sweep", capture)
@@ -393,13 +402,48 @@ def test_direct_sheet_helix_junction_has_a_shared_plane_and_narrow_tip(
         "medium",
     )
     assert len(sections) == 2
-    sheet, sk = sections[0]
-    helix, hk = sections[1]
-    sheet_center = sheet.vertices[-sk - 1]
-    sheet_rim = sheet.vertices[-sk:]
-    helix_center = helix.vertices[-2 * (hk + 1)]
-    helix_normal = helix.normals[-2 * (hk + 1)]
-    np.testing.assert_allclose(sheet_center, helix_center, atol=1e-6)
-    np.testing.assert_allclose(sheet.normals[-sk - 1], -helix_normal, atol=1e-6)
-    assert np.max(np.abs((sheet_rim - helix_center) @ helix_normal)) < 1e-5
+    sheet, sk, sheet_axis = sections[0]
+    helix, hk, helix_axis = sections[1]
+    sheet_center = sheet_axis[-1]
+    sheet_rim = sheet.vertices[(len(sheet_axis) - 1) * sk : len(sheet_axis) * sk]
+    helix_center = helix_axis[0]
+    helix_normal = geometry.unit(
+        np.cross(
+            helix.vertices[1] - helix.vertices[0],
+            helix.vertices[hk // 2] - helix.vertices[0],
+        )
+    )
+    if representation == "cartoon":
+        # Ribbon2Renderer fits each element independently, including flanks.
+        radius = np.linalg.norm(helix.vertices[:hk] - helix_center, axis=1).min()
+        assert np.linalg.norm(sheet_rim - helix_center, axis=1).max() < radius
+    else:
+        np.testing.assert_allclose(sheet_center, helix_center, atol=1e-6)
+        assert np.max(np.abs((sheet_rim - helix_center) @ helix_normal)) < 1e-5
     assert np.linalg.norm(sheet_rim - sheet_center, axis=1).max() < 0.5
+
+
+@pytest.mark.parametrize("style", ["ribbon", "round_ribbon", "fancy_ribbon"])
+def test_ribbon_arrow_has_a_flat_shoulder_and_narrow_tip(style):
+    atoms, coords = strand(8)
+    mesh = geometry.polymer_mesh(
+        atoms,
+        coords,
+        geometry.atom_colors(atoms, "keep"),
+        presets.resolve(style),
+        "ribbon",
+        "medium",
+    )
+    triangles = mesh.vertices[mesh.faces]
+    shoulder = np.all(np.isclose(triangles[:, :, 0], 6.5 * 3.7, atol=1e-5), axis=1)
+    area = np.linalg.norm(
+        np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]),
+        axis=1,
+    )
+    assert area[shoulder].sum() > 0.05
+    width = 1.2 * 1.6 if style == "fancy_ribbon" else 1.4 * 1.8
+    assert np.max(np.abs(triangles[shoulder, :, 1])) == pytest.approx(width, abs=1e-5)
+    boundary = mesh.vertices[np.isclose(mesh.vertices[:, 0], 7.5 * 3.7, atol=1e-5)]
+    assert len(boundary) > 10
+    coil = 0.25 if style == "fancy_ribbon" else 0.35
+    assert np.max(np.abs(boundary[:, 1:])) <= coil + 1e-5

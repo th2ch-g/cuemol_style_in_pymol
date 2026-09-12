@@ -1,6 +1,7 @@
 """Indexed geometry shared by the GPU renderer, picker, and CGO exporter."""
 
 from dataclasses import dataclass
+
 import numpy as np
 
 

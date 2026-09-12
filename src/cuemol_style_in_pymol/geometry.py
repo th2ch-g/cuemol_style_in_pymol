@@ -1,59 +1,76 @@
-"""Molecular mesh construction inspired by CueMol's documented sections.
-
-Ribbon and tube axes use natural cubic splines with chord-length knots.
-Dimensions follow CueMol renderer styles in angstrom units. Cartoon junctions
-and solvent-excluded surfaces remain independent approximations.
-"""
+"""CueMol sections, chord-length ribbon splines, and standalone EDTSurf meshes."""
 
 import colorsys
-from copy import deepcopy
+import itertools
 from functools import lru_cache
-import xml.etree.ElementTree as ET
 
 import numpy as np
 
 from .mesh import Mesh, merge, unit
 from .presets import (
     COIL_COLOR,
-    CUEMOL_RADII,
     CUEMOL_ELEMENTS,
     CUEMOL_NUCLEIC_COLOR,
     CUEMOL_OTHER_COLOR,
+    CUEMOL_RADII,
     CUEMOL_SECONDARY_COLORS,
     QUALITIES,
     SECONDARY_COLORS,
 )
 
 
-@lru_cache(maxsize=32)
-def section(kind, detail):
+@lru_cache(maxsize=64)
+def section(kind, detail, ratio=6.5):
+    """CueMol cross sections in normalized (width, thickness) coordinates."""
     if kind == "rectangle":
-        # Duplicate corners to keep face normals sharp.
-        points = np.array(
-            [[-1, -1], [1, -1], [1, -1], [1, 1], [1, 1], [-1, 1], [-1, 1], [-1, -1]],
-            float,
-        )
-        normals = np.array(
-            [[0, -1], [0, -1], [1, 0], [1, 0], [0, 1], [0, 1], [-1, 0], [-1, 0]], float
-        )
-        return points, normals
+        count = max(1, int(detail * ratio / (2 * (ratio + 1))))
+        points, normals = [], []
+        for start, end, normal in (
+            ((-1, -1), (1, -1), (0, -1)),
+            ((1, -1), (1, 1), (1, 0)),
+            ((1, 1), (-1, 1), (0, 1)),
+            ((-1, 1), (-1, -1), (-1, 0)),
+        ):
+            size = count if start[1] == end[1] else max(1, int(count / ratio))
+            points.extend(np.linspace(start, end, size + 1))
+            normals.extend([normal] * (size + 1))
+        return np.asarray(points), np.asarray(normals)
     if kind == "fancy":
-        # Two circular rails joined by flat faces, using Fancy1's sharp=0.3.
         theta = 0.3 * np.pi
-        angle = np.linspace(
-            theta - np.pi / 2, 3 * np.pi / 2 - theta, max(8, detail // 2) + 1
+        by = max(ratio - 1 - np.cos(theta), 0)
+        cy = by + np.cos(theta)
+        arc_length = 2 * (np.pi - theta)
+        spacing = (4 * by + 2 * arc_length) / detail
+        arc_steps = max(4, int(arc_length / spacing)) * 2
+        flat_steps = max(1, int(2 * by / spacing))
+        angle = np.linspace(theta - np.pi / 2, 3 * np.pi / 2 - theta, arc_steps + 1)
+        rail = np.c_[(np.sin(angle) + cy) / ratio, np.cos(angle)]
+        normal = np.c_[ratio * np.sin(angle), np.cos(angle)]
+        front = np.c_[
+            np.linspace(by, -by, flat_steps + 1) / ratio,
+            np.full(flat_steps + 1, -np.sin(theta)),
+        ]
+        points = np.vstack((rail, front, -rail, -front))
+        normals = np.vstack(
+            (
+                normal,
+                np.tile([0, -1], (len(front), 1)),
+                -normal,
+                np.tile([0, 1], (len(front), 1)),
+            )
         )
-        rail = np.c_[(1.1 + 0.2 * np.sin(angle)) / 1.3, np.cos(angle)]
-        normal = np.c_[1.3 * np.sin(angle), 0.2 * np.cos(angle)]
-        points = np.vstack((rail, rail[-1], -rail[0], -rail, -rail[-1], rail[0]))[::-1]
-        normals = np.vstack((normal, [0, -1], [0, -1], -normal, [0, 1], [0, 1]))[::-1]
         return points, unit(normals)
-    t = np.linspace(0, 2 * np.pi, detail, endpoint=False)
-    points = np.c_[np.cos(t), np.sin(t)]
+    phi = np.linspace(0, 2 * np.pi, detail + 1)
+    angles = np.unwrap(np.arctan2(ratio * np.sin(phi), np.cos(phi)))
+    samples = []
+    for start, end in itertools.pairwise(angles):
+        divisions = max(1, int(np.ceil((end - start) / (2 * np.pi / detail + 0.001))))
+        samples.extend(np.linspace(start, end, divisions, endpoint=False))
+    points = np.c_[np.sin(samples), np.cos(samples)]
     return points, points.copy()
 
 
-def interpolate(points, samples):
+def interpolate(points, samples, derivative=0):
     from scipy.interpolate import CubicSpline
 
     p = np.asarray(points, float)
@@ -64,7 +81,11 @@ def interpolate(points, samples):
         0, np.cumsum(np.maximum(np.linalg.norm(np.diff(p, axis=0), axis=1), 1e-8))
     ]
     sample = np.interp(x, np.arange(len(p)), knots)
-    return CubicSpline(knots, p, bc_type="natural")(sample), x
+    result = CubicSpline(knots, p, bc_type="natural")(sample, derivative)
+    if derivative:
+        interval = np.minimum(np.floor(x).astype(int), len(p) - 2)
+        result *= np.diff(knots)[interval, None] ** derivative
+    return result, x
 
 
 @lru_cache(maxsize=64)
@@ -90,16 +111,33 @@ def smoothing_operator(count, samples, rho=3.0):
     return basis(np.linspace(-1, 1, (count - 1) * samples + 1)) @ coefficients
 
 
-def frames(path, hints, tangent=None):
+def transport_hints(path, hints, tangent=None):
     tangent = unit(np.gradient(path, axis=0) if tangent is None else tangent)
-    side = hints - tangent * np.sum(hints * tangent, axis=1, keepdims=True)
-    for i in range(len(side)):
-        if np.linalg.norm(side[i]) < 1e-7:
-            previous = side[i - 1] if i else np.eye(3)[np.argmin(np.abs(tangent[i]))]
-            side[i] = previous - tangent[i] * np.dot(previous, tangent[i])
-        if i and np.dot(side[i], side[i - 1]) < 0:
-            side[i] *= -1
-    side = unit(side)
+    aligned = unit(np.asarray(hints, dtype=float)).copy()
+    for i in range(len(aligned)):
+        if np.linalg.norm(aligned[i]) < 1e-7:
+            aligned[i] = (
+                aligned[i - 1] if i else np.eye(3)[np.argmin(np.abs(tangent[i]))]
+            )
+        if i:
+            axis = np.cross(tangent[i - 1], tangent[i])
+            cosine = np.clip(tangent[i - 1] @ tangent[i], -1, 1)
+            previous = aligned[i - 1]
+            transported = previous + np.cross(axis, previous)
+            if cosine > -0.999999:
+                transported += np.cross(axis, np.cross(axis, previous)) / (1 + cosine)
+            if np.dot(aligned[i], transported) < 0:
+                aligned[i] *= -1
+    return aligned
+
+
+def frames(path, hints, tangent=None, ribbon=False):
+    tangent = unit(np.gradient(path, axis=0) if tangent is None else tangent)
+    if ribbon:
+        side = np.asarray(hints).copy()
+    else:
+        side = hints - tangent * np.sum(hints * tangent, axis=1, keepdims=True)
+        side = transport_hints(path, side, tangent)
     return side, unit(np.cross(tangent, side))
 
 
@@ -116,14 +154,18 @@ def sweep(
     front=None,
     side_color=False,
     frame=None,
+    caps=(True, True),
 ):
     if len(path) < 2:
         return Mesh([], [], [], [], [])
     side, up = frames(path, hints) if frame is None else frame
-    shape, sn = section(kind, detail)
-    k = len(shape)
     width = np.broadcast_to(widths, (len(path),))
     thick = np.broadcast_to(thickness, (len(path),))
+    ratio = (
+        6.5 if kind == "fancy" else float(np.median(width / np.maximum(thick, 1e-6)))
+    )
+    shape, sn = section(kind, detail, round(ratio, 6))
+    k = len(shape)
     v = (
         path[:, None]
         + side[:, None] * width[:, None, None] * shape[None, :, 0, None]
@@ -133,6 +175,16 @@ def sweep(
         side[:, None] * sn[None, :, 0, None] / np.maximum(width[:, None, None], 1e-6)
         + up[:, None] * sn[None, :, 1, None] / np.maximum(thick[:, None, None], 1e-6)
     )
+    velocity = np.gradient(path, axis=0)
+    speed2 = np.maximum(np.sum(velocity**2, axis=1), 1e-12)
+    physical_sn = unit(
+        sn / [max(float(np.median(width)), 1e-6), max(float(np.median(thick)), 1e-6)]
+    )
+    slope = -(
+        np.gradient(width)[:, None] * np.abs(physical_sn[None, :, 0])
+        + np.gradient(thick)[:, None] * np.abs(physical_sn[None, :, 1])
+    )
+    n = unit(n + velocity[:, None] * (slope / speed2[:, None])[:, :, None])
     col = np.repeat(np.asarray(colors)[:, None, :], k, axis=1)
     if back or side_color:
         # Frame signs can depend on preceding strands and loops. Color helix
@@ -143,6 +195,8 @@ def sweep(
             else np.ones(len(path))
         )
         mask = polarity[:, None] * shape[None, :, 1] < -0.1
+        if kind == "fancy":
+            mask &= np.abs(sn[None, :, 1]) > 0.999
         if front is not None:
             mask &= np.linalg.norm(front, axis=1)[:, None] > 1e-7
         if side_color:
@@ -167,10 +221,33 @@ def sweep(
     )
     ids = np.repeat(owners, k)
     # Independent cap vertices prevent shading the cross-section as a side wall.
-    for idx, sign in ((0, -1), (-1, 1)):
+    for enabled, (idx, sign) in zip(caps, ((0, -1), (-1, 1))):
+        if not enabled:
+            continue
         rim = v[idx]
         start = len(vertices)
         normal = unit(np.cross(side[idx], up[idx]))
+        if enabled == "sphere":
+            extent = max(np.linalg.norm(rim[0] - path[idx]), 1e-8)
+            t = np.linspace(0, 1, 6)
+            radius = np.sqrt(1 - t * t)
+            cap = (
+                path[idx]
+                + radius[:, None, None] * (rim - path[idx])
+                + sign * extent * t[:, None, None] * normal
+            )
+            cap_normals = unit(
+                radius[:, None, None] * n[idx] + sign * t[:, None, None] * normal
+            )
+            vertices = np.vstack((vertices, cap.reshape(-1, 3)))
+            normals = np.vstack((normals, cap_normals.reshape(-1, 3)))
+            vertex_colors = np.vstack((vertex_colors, np.tile(colors[idx], (6 * k, 1))))
+            ids = np.r_[ids, np.full(6 * k, owners[idx])]
+            for ring in range(5):
+                for j in range(k):
+                    a, b = start + ring * k + j, start + ring * k + (j + 1) % k
+                    f.extend(((a, b, a + k), (b, b + k, a + k)))
+            continue
         vertices = np.vstack((vertices, path[idx], rim))
         normals = np.vstack((normals, np.tile(sign * normal, (k + 1, 1))))
         vertex_colors = np.vstack((vertex_colors, np.tile(colors[idx], (k + 1, 1))))
@@ -232,7 +309,7 @@ def sphere_template(detail):
 
 
 def sphere(center, radius, color, owner, detail):
-    v, f = sphere_template(detail)
+    v, f = sphere_template(detail * 3)
     return Mesh(
         v * radius + center, v, np.tile(color, (len(v), 1)), f, np.full(len(v), owner)
     )
@@ -255,7 +332,7 @@ def bond(a, b, radius, colors, owners, detail):
                 [color, color],
                 [owner, owner],
                 "ellipse",
-                detail,
+                detail * 3,
             )
             for start, end, color, owner in (
                 (a, middle, colors[0], owners[0]),
@@ -267,7 +344,7 @@ def bond(a, b, radius, colors, owners, detail):
 
 def atom_colors(atoms, mode, representation="ribbon"):
     colors = np.array([a.color for a in atoms])
-    chains = sorted(set((a.segi, a.chain) for a in atoms))
+    chains = sorted({(a.segi, a.chain) for a in atoms})
     elements = {
         "C": (0.45, 0.45, 0.45),
         "N": (0.2, 0.3, 0.9),
@@ -380,6 +457,20 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
         if len(ca) < 2:
             meshes.append(sphere(ca[0], 0.25, colors[indices[0]], indices[0], detail))
             continue
+        if representation == "cartoon" and atoms[indices[0]].kind == "protein":
+            from .cartoon import build
+
+            meshes.extend(build(segment, atoms, coords, colors, profile, axial, detail))
+            continue
+        if (
+            representation == "ribbon"
+            and atoms[indices[0]].kind == "protein"
+            and len(ca) >= 3
+        ):
+            from .ribbon import build
+
+            meshes.extend(build(segment, atoms, coords, colors, profile, axial, detail))
+            continue
         seq = np.array([atoms[i].ss for i in indices])
         nucleic = atoms[indices[0]].kind == "nucleic"
         hints = []
@@ -399,7 +490,8 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
                 ca[interior] * 0.5 + (ca[interior - 1] + ca[interior + 1]) * 0.25
             )
         path, x = interpolate(axis_points, axial)
-        aligned, _ = frames(axis_points, np.asarray(hints))
+        axis_tangent, _ = interpolate(axis_points, axial, 1)
+        aligned = transport_hints(axis_points, np.asarray(hints), axis_tangent[::axial])
         normal_path, _ = interpolate(axis_points + aligned, axial)
         hi = normal_path - path
         pick = np.clip(np.floor(x + 0.5).astype(int), 0, len(indices) - 1)
@@ -418,6 +510,24 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
             width[ss == "S"] = 1.2 if fancy else 1.4
             thickness[np.isin(ss, ["H", "S"])] = 0.2
             for j, secondary in enumerate(seq):
+                first = j == 0 or seq[j - 1] != secondary
+                last = j == len(seq) - 1 or seq[j + 1] != secondary
+                if representation == "ribbon" and secondary in ("H", "S"):
+                    begin, end = max(0, j - 0.5), min(len(seq) - 1, j + 0.5)
+                    region = (x >= begin) & (x <= end)
+                    t = (x[region] - begin) / max(end - begin, 1e-8)
+                    blend = np.where(
+                        t <= 0.5, (2 * t) ** 2.2 / 2, 1 - (2 * (1 - t)) ** 2.2 / 2
+                    )
+                    if first or (last and secondary == "H"):
+                        weight = blend if first else 1 - blend
+                        full_width = (
+                            (1.3 if fancy else 1.2)
+                            if secondary == "H"
+                            else (1.2 if fancy else 1.4)
+                        )
+                        width[region] = coil + (full_width - coil) * weight
+                        thickness[region] = coil + (0.2 - coil) * weight
                 if secondary == "S" and (j == len(seq) - 1 or seq[j + 1] != "S"):
                     begin, end = max(0, j - 0.5), min(len(seq) - 1, j + 0.5)
                     region = (x >= begin) & (x <= end)
@@ -430,8 +540,11 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
                         else 2.2
                     )
                     shoulder = (1.2 if fancy else 1.4) * (1.6 if fancy else 1.8)
-                    tip = coil if j < len(seq) - 1 else 0.025
+                    tip = coil
                     width[region] = tip + (shoulder - tip) * (1 - t) ** gamma
+                    thickness[region] = 0.2 + (coil - 0.2) * np.where(
+                        t <= 0.5, (2 * t) ** gamma / 2, 1 - (2 * (1 - t)) ** gamma / 2
+                    )
         sheet_width = width.copy()
         sheet_thickness = thickness.copy()
         if representation == "cartoon":
@@ -487,14 +600,24 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
             kinds[ss == "H"] = "ellipse"
         # Use one frame at each shared boundary to keep adjoining sections
         # in the same plane, including direct sheet-to-helix transitions.
-        tangent = np.gradient(path, axis=0)
+        tangent = (
+            axis_tangent if representation != "cartoon" else np.gradient(path, axis=0)
+        )
         if representation == "cartoon":
             boundaries = np.r_[0, np.flatnonzero(ss[1:] != ss[:-1]) + 1, len(path) - 1]
-            for first, last in zip(boundaries[:-1], boundaries[1:]):
+            for first, last in itertools.pairwise(boundaries):
                 if ss[first] == "H" and last > first:
                     tangent[first] = path[first + 1] - path[first]
                     tangent[last] = path[last] - path[last - 1]
-        side, up = frames(path, hi, tangent)
+        side, up = frames(
+            path, hi, tangent, ribbon=representation == "ribbon" and not nucleic
+        )
+        sampled_colors = colors[owner].copy()
+        if representation != "cartoon":
+            for channel in range(3):
+                sampled_colors[:, channel] = np.interp(
+                    x, np.arange(len(indices)), colors[indices, channel]
+                )
         begin = 0
         while begin < len(path) - 1:
             end = begin + 1
@@ -517,7 +640,7 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
                     local_width,
                     local_thickness,
                     hi[sl],
-                    colors[owner[sl]],
+                    sampled_colors[sl],
                     owner[sl],
                     str(kinds[begin]),
                     detail,
@@ -525,6 +648,10 @@ def polymer_mesh(atoms, coords, colors, profile, representation, quality):
                     front[sl] if front is not None else None,
                     side_color=fancy and ss[begin] == "S",
                     frame=(side[sl], up[sl]),
+                    caps=(
+                        "sphere" if begin == 0 else False,
+                        "sphere" if end == len(path) - 1 else False,
+                    ),
                 )
             )
             begin = end
@@ -571,21 +698,30 @@ def nucleic_bases(atoms, coords, colors, detail):
     }
     if sites:
         tree = cKDTree(coords[sites])
-        for i, j in sorted(tree.query_pairs(3.7)):
-            a, b = sites[i], sites[j]
-            ri, rj = residue_ids[i], residue_ids[j]
-            if ri == rj or frozenset((atoms[a].name, atoms[b].name)) not in pairs:
-                continue
-            direction = unit(coords[a] - coords[b])
-            if max(
-                abs(records[ri][3] @ direction), abs(records[rj][3] @ direction)
-            ) > np.sin(np.deg2rad(30)):
-                continue
-            key = tuple(sorted((ri, rj)))
-            counts[key] = counts.get(key, 0) + 1
+        for i, neighbors in enumerate(tree.query_ball_point(coords[sites], 3.7)):
+            a, ri = sites[i], residue_ids[i]
+            candidates = []
+            for j in neighbors:
+                b, rj = sites[j], residue_ids[j]
+                if ri == rj or frozenset((atoms[a].name, atoms[b].name)) not in pairs:
+                    continue
+                delta = coords[a] - coords[b]
+                direction = unit(delta)
+                if max(
+                    abs(records[ri][3] @ direction), abs(records[rj][3] @ direction)
+                ) <= np.sin(np.deg2rad(30)):
+                    candidates.append((np.dot(delta, delta), rj))
+            if candidates:
+                _, partner = min(candidates)
+                counts[ri, partner] = counts.get((ri, partner), 0) + 1
     partners = {}
-    for (i, j), count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
-        if count >= 2 and i not in partners and j not in partners:
+    for i in range(len(records)):
+        candidates = [(count, -j) for (row, j), count in counts.items() if row == i]
+        if not candidates:
+            continue
+        count, partner = max(candidates)
+        j = -partner
+        if 2 <= count <= 3 and i not in partners and j not in partners:
             partners[i], partners[j] = j, i
     meshes = []
     for j, (_, pivot, end, _) in enumerate(records):
@@ -615,84 +751,15 @@ def nucleic_bases(atoms, coords, colors, detail):
 
 
 def surface_mesh(model, colors, coords, quality):
-    """Use PyMOL's SES algorithm in an isolated, headless instance."""
-    import pymol2
-    from scipy.spatial import cKDTree
+    """Generate CueMol's EDTSurf solvent-excluded surface and voxel owners."""
+    from ._edtsurf import surface
 
-    with pymol2.PyMOL() as p:
-        c = p.cmd
-        model = deepcopy(model)
-        for atom in model.atom:
-            atom.vdw = CUEMOL_RADII.get(atom.symbol.upper(), 1.7)
-        c.load_model(model, "surface_source")
-        c.hide("everything")
-        c.show("surface")
-        c.set("surface_quality", {"low": 0, "medium": 1, "high": 2}[quality])
-        c.set("surface_solvent", 0)
-        c.set("solvent_radius", 1.4)
-        xml = c.get_collada()
-    root = ET.fromstring(xml)
-    ns = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
-    meshes = []
-    for m in root.findall(".//c:mesh", ns):
-        sources = {}
-        for s in m.findall("c:source", ns):
-            arr = s.find("c:float_array", ns)
-            accessor = s.find(".//c:accessor", ns)
-            if arr is not None:
-                sources[s.attrib["id"]] = np.fromstring(
-                    arr.text or "", sep=" "
-                ).reshape(-1, int(accessor.attrib.get("stride", 3)))
-        vert = {
-            v.attrib["id"]: v.find("c:input", ns).attrib["source"][1:]
-            for v in m.findall("c:vertices", ns)
-        }
-        for prim in list(m):
-            if prim.tag.rsplit("}", 1)[-1] not in ("triangles", "polylist"):
-                continue
-            inp = {
-                i.attrib["semantic"]: (
-                    i.attrib["source"][1:],
-                    int(i.attrib.get("offset", 0)),
-                )
-                for i in prim.findall("c:input", ns)
-            }
-            stride = max(off for _, off in inp.values()) + 1
-            indices = np.fromstring(
-                prim.find("c:p", ns).text, sep=" ", dtype=int
-            ).reshape(-1, stride)
-            source, offset = inp["VERTEX"]
-            v = sources[vert.get(source, source)][indices[:, offset], :3]
-            counts = prim.find("c:vcount", ns)
-            counts = (
-                np.fromstring(counts.text, sep=" ", dtype=int)
-                if counts is not None
-                else np.full(len(v) // 3, 3)
-            )
-            f = []
-            first = 0
-            for count in counts:
-                f.extend((first, first + j, first + j + 1) for j in range(1, count - 1))
-                first += count
-            f = np.asarray(f)
-            if "NORMAL" in inp:
-                source, offset = inp["NORMAL"]
-                normals = sources[source][indices[:, offset], :3]
-            else:
-                normals = np.zeros_like(v)
-                np.add.at(
-                    normals,
-                    f.ravel(),
-                    np.repeat(
-                        np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]),
-                        3,
-                        axis=0,
-                    ),
-                )
-                normals = unit(normals)
-            owners = cKDTree(coords).query(v)[1]
-            meshes.append(Mesh(v, normals, colors[owners], f, owners))
-    return merge(meshes)
+    elements = {name: i for i, name in enumerate(("H", "C", "N", "O", "S", "P"))}
+    types = [elements.get(atom.symbol.upper(), 6) for atom in model.atom]
+    vertices, normals, faces, owners = surface(
+        coords, types, {"low": 3, "medium": 6, "high": 10}[quality]
+    )
+    return Mesh(vertices, normals, colors[owners], faces, owners)
 
 
 def build(atoms, coords, bonds, model, profile, representation, quality, color_mode):

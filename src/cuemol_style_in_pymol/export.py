@@ -1,14 +1,40 @@
 """Native CGO interoperability and transactional image export."""
 
 from contextlib import contextmanager
+from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
 import numpy as np
 
-from .materials import bake
+from .materials import bake, srgb_decode, srgb_encode
 from .mesh import unit
+
+
+def downsample_png(data, width, height):
+    """Average the 3x sample grid in premultiplied RGBA without interpolation."""
+    from PIL import Image
+
+    with Image.open(BytesIO(data)) as image:
+        if image.size != (width * 3, height * 3):
+            raise RuntimeError("PyMOL returned an unexpected supersampled image size")
+        pixels = np.asarray(image.convert("RGBA"), dtype=np.float32)
+        pixels[:, :, :3] *= pixels[:, :, 3:4] / 255
+        pixels = pixels.reshape(height, 3, width, 3, 4).mean(axis=(1, 3))
+        pixels[:, :, :3] *= np.divide(
+            255,
+            pixels[:, :, 3:4],
+            out=np.zeros_like(pixels[:, :, 3:4]),
+            where=pixels[:, :, 3:4] > 0,
+        )
+        result = Image.fromarray(np.uint8(np.clip(np.floor(pixels + 0.5), 0, 255)))
+        output = BytesIO()
+        options = {
+            key: image.info[key] for key in ("dpi", "icc_profile") if key in image.info
+        }
+        result.save(output, format="PNG", **options)
+        return output.getvalue()
 
 
 @contextmanager
@@ -23,19 +49,21 @@ def settings(cmd, values):
             cmd.set(key, value if len(value) > 1 else value[0])
 
 
-def cgo_mesh(piece, material, rotation=None):
+def cgo_mesh(piece, material, rotation=None, sampled=None, *, normals=True):
     from pymol.cgo import ALPHA, BEGIN, COLOR, END, NORMAL, TRIANGLES, VERTEX
 
-    mesh = piece.mesh
+    mesh = piece.mesh if sampled is None else sampled[0]
     ids = mesh.faces.ravel()
-    colors = bake(mesh, material, rotation)
-    values = np.empty((len(ids), 12), float)
-    values[:, 0] = NORMAL
-    values[:, 1:4] = mesh.normals[ids]
-    values[:, 4] = COLOR
-    values[:, 5:8] = colors[ids]
-    values[:, 8] = VERTEX
-    values[:, 9:12] = mesh.vertices[ids]
+    colors = bake(mesh, material, rotation) if sampled is None else sampled[1]
+    values = np.empty((len(ids), 12 if normals else 8), np.float32)
+    offset = 4 if normals else 0
+    if normals:
+        values[:, 0] = NORMAL
+        values[:, 1:4] = mesh.normals[ids]
+    values[:, offset] = COLOR
+    values[:, offset + 1 : offset + 4] = colors[ids]
+    values[:, offset + 4] = VERTEX
+    values[:, offset + 5 : offset + 8] = mesh.vertices[ids]
     return [ALPHA, mesh.opacity, BEGIN, TRIANGLES, *values.ravel().tolist(), END]
 
 
@@ -46,7 +74,7 @@ def ray_proxy(drawing):
     ignores it in both OpenGL CGO paths. Transparent bodies already have a
     native CGO, so including them here would render their opacity twice.
     Materials use molecular-space samples, independent of the active camera.
-    The dedicated export adds camera-dependent outline cylinders separately.
+    The dedicated export adds camera-dependent contour geometry separately.
     """
     from pymol.cgo import ALPHA, TRIANGLE
 
@@ -74,9 +102,12 @@ def native_cgo_bytes(drawings):
         opaque = [p for p in drawing.pieces if p.mesh.opacity >= 0.999999]
         if opaque:
             size += 4 * (2 + sum(28 * len(p.mesh.faces) for p in opaque))
-        for piece in drawing.pieces:
-            if piece.mesh.opacity < 0.999999:
-                size += 4 * (5 + 36 * len(piece.mesh.faces))
+        alpha = sum(
+            4 * (5 + 36 * len(p.mesh.faces))
+            for p in drawing.pieces
+            if p.mesh.opacity < 0.999999
+        )
+        size += max(alpha, drawing.sampled_bytes)
     return size
 
 
@@ -102,28 +133,165 @@ def visible_edges(edges, modelview, orthoscopic, creases):
     return edges[keep]
 
 
-def ray_cgo(drawing, cmd):
-    from pymol.cgo import ALPHA, CYLINDER
+def sampled_cgo(drawing, meshes, matrices, budget, opacity=1, native_fog=None):
+    from .raster import colors, pixel_mesh
+    from .sampling import cancel_native_fog
 
-    matrix = view_matrix(cmd)
+    image, depth = colors(drawing, meshes, matrices, budget)
+    mesh = pixel_mesh(image, depth, matrices, budget, opacity, drawing.background)
+    rgb = cancel_native_fog(mesh.colors, mesh, matrices, drawing.background, native_fog)
+    return cgo_mesh(None, "nolighting", sampled=(mesh, rgb), normals=False)
+
+
+def ray_cgo(drawing, cmd, width=0, height=0, budget=2048 * 1024**2):
+    from .raster import layers
+    from .sampling import camera
+
+    matrices = camera(cmd, width, height, ray=True)
+    drawing.background = tuple(cmd.get_color_tuple(cmd.get("bg_rgb")))
+    view = cmd.get_view()
+    drawing.fog = (-view[11], -view[11] + (view[16] - view[15]) / 2)
     result = []
-    for piece in drawing.pieces:
-        result.extend(cgo_mesh(piece, drawing.profile.material, matrix[:3, :3]))
-        if drawing.profile.edges != "none":
-            edges = visible_edges(
-                piece.edges,
-                matrix,
-                cmd.get_setting_int("orthoscopic"),
-                drawing.profile.edges == "edges",
-            )
-            values = np.empty((len(edges), 14), float)
-            values[:, 0] = CYLINDER
-            values[:, 1:7] = edges[:, :6]
-            values[:, 7] = drawing.profile.edge_width / 2
-            values[:, 8:11] = drawing.edge_color
-            values[:, 11:14] = drawing.edge_color
-            result.extend([ALPHA, 1.0, *values.ravel().tolist()])
+    for opacity, meshes in layers(drawing).items():
+        result.extend(sampled_cgo(drawing, meshes, matrices, budget, opacity))
+        if len(result) * 4 > budget:
+            raise ValueError("Camera-dependent ray CGO exceeds cache_mb")
     return result
+
+
+def blend_images(base, passes):
+    """Blend completed renderer passes in display space, including coverage."""
+    from PIL import Image
+
+    def pixels(data):
+        with Image.open(BytesIO(data)) as image:
+            values = np.asarray(image.convert("RGBA"), np.float32) / 255
+        values[:, :, :3] = srgb_encode(values[:, :, :3])
+        return values
+
+    result = (1 - sum(alpha for alpha, _ in passes)) * pixels(base)
+    for alpha, data in passes:
+        result += alpha * pixels(data)
+    result[:, :, :3] = srgb_decode(result[:, :, :3])
+    output = BytesIO()
+    Image.fromarray(np.uint8(np.clip(np.floor(result * 255 + 0.5), 0, 255))).save(
+        output, format="PNG"
+    )
+    return output.getvalue()
+
+
+def render_group_passes(manager, width, height, ray, temporary, disabled, prepared):
+    from .gpu import Drawing
+    from .presets import Profile
+    from .raster import colors, layers
+    from .sampling import camera
+
+    cmd = manager.cmd
+    matrices = camera(cmd, width, height, ray=ray)
+    size = matrices[2][2:].astype(int)
+    view = cmd.get_view()
+    background = tuple(cmd.get_color_tuple(cmd.get("bg_rgb")))
+    fog = (-view[11], -view[11] + (view[16] - view[15]) / 2)
+    groups = []
+    callbacks = []
+    for drawing in manager.active_drawings():
+        drawing.background, drawing.fog = background, fog
+        for opacity, meshes in layers(drawing).items():
+            if not ray and opacity >= 0.999999:
+                continue
+            name = "_cuemol_export_" + uuid4().hex
+            temporary.append(name)
+            if ray:
+                cmd.load_cgo(
+                    sampled_cgo(drawing, meshes, matrices, drawing.sample_budget),
+                    name,
+                    zoom=0,
+                )
+                cmd.set("cgo_lighting", 0, name)
+            else:
+                image, depth = colors(drawing, meshes, matrices, drawing.sample_budget)
+                projection = matrices[1]
+                depth = (
+                    0.5
+                    + 0.5
+                    * (-projection[2, 2] * depth + projection[2, 3])
+                    / np.maximum(-projection[3, 2] * depth + projection[3, 3], 1e-8)
+                ).astype(np.float32)
+                depth[image[:, :, 3] == 0] = 1
+                layer = Drawing(
+                    [],
+                    Profile(material="nolighting"),
+                    drawing.edge_color,
+                    manager.pool,
+                    name=name,
+                    background=background,
+                    fog=(1e10, 2e10),
+                    raster_image=image[::-1],
+                    raster_depth=depth[::-1],
+                    extent=drawing.extent,
+                )
+                callbacks.append(layer)
+                prepared.append(layer)
+                cmd.load_callback(layer, name, 1, 1, 0, 1, 0)
+            if opacity < 0.999999:
+                cmd.disable(name)
+                groups.append((opacity, name))
+    enabled = set(cmd.get_names("objects", enabled_only=1))
+    for entry in manager.entries.values():
+        alpha_names = {
+            f"{entry.name}_alpha_{i}" for i in range(1, len(entry.drawings) + 1)
+        }
+        empty_shapes = {
+            f"{entry.name}_shape_{i}"
+            for i, drawings in enumerate(entry.drawings.values(), 1)
+            if not any(p.mesh.opacity >= 0.999999 for d in drawings for p in d.pieces)
+        }
+        for name in entry.generated:
+            if name in enabled and (ray or name in alpha_names or name in empty_shapes):
+                disabled.append(name)
+                cmd.disable(name)
+    manager.pool.raster_scale = 1
+
+    def render():
+        enabled = set(cmd.get_names("objects", enabled_only=1))
+        active = [(d, d.raster_draws) for d in callbacks if d.name in enabled]
+        (cmd.ray if ray else cmd.draw)(
+            int(size[0]) * 3, int(size[1]) * 3, antialias=0, quiet=1
+        )
+        errors = [drawing.error for drawing in callbacks if drawing.error]
+        if errors:
+            raise RuntimeError(errors[0])
+        if any(d.raster_draws == count for d, count in active):
+            raise RuntimeError("The export layer does not match the active sample grid")
+        return downsample_png(cmd.png(None, prior=1, quiet=1), *map(int, size))
+
+    with settings(
+        cmd,
+        {
+            "ray_trace_mode": 0,
+            "ambient": 1,
+            "direct": 0,
+            "reflect": 0,
+            "specular": 0,
+            "light_count": 1,
+            "ray_shadows": 0,
+            "ray_trace_fog": 0,
+            "ray_transparency_oblique": 0,
+            "ray_transparency_contrast": 1,
+            "ray_legacy_lighting": 0,
+        }
+        if ray
+        else {},
+    ):
+        base = render()
+        passes = []
+        for opacity, name in groups:
+            cmd.enable(name)
+            try:
+                passes.append((opacity, render()))
+            finally:
+                cmd.disable(name)
+        return blend_images(base, passes) if passes else base
 
 
 def image(manager, filename, width, height, ray):
@@ -142,31 +310,32 @@ def image(manager, filename, width, height, ray):
     sculpting = cmd.get_setting_int("sculpting")
     frame = cmd.get_frame()
     show_selection = manager.pool.show_selection
+    raster_scale = manager.pool.raster_scale
     manager.pool.show_selection = False
-    temporary, disabled = [], []
+    temporary, disabled, prepared = [], [], []
+    busy = manager.busy
     try:
         if playing:
             cmd.mstop()
-        if ray:
-            for drawing in manager.active_drawings():
-                name = "_cuemol_ray_" + uuid4().hex
-                temporary.append(name)
-                cmd.load_cgo(ray_cgo(drawing, cmd), name, zoom=0)
-            for entry in manager.entries.values():
-                for name in entry.generated:
-                    if name in cmd.get_names("objects", enabled_only=1):
-                        disabled.append(name)
-                        cmd.disable(name)
-            # Edges are explicit geometry, avoiding an extra global outline pass.
-            with settings(cmd, {"ray_trace_mode": 0}):
-                data = cmd.png(None, width, height, ray=1, quiet=1)
+        if not ray and manager.widget is None:
+            raise ValueError(
+                "GPU PNG export requires the PyMOL Qt GUI; use cuemol_style ray in headless mode"
+            )
+        manager.prepare_view(width, height, native=False)
+        manager.busy = True
+        alpha = any(
+            p.mesh.opacity < 0.999999
+            for d in manager.active_drawings()
+            for p in d.pieces
+        )
+        if ray or alpha:
+            data = render_group_passes(
+                manager, width, height, ray, temporary, disabled, prepared
+            )
         else:
-            if manager.widget is None:
-                raise ValueError(
-                    "GPU PNG export requires the PyMOL Qt GUI; use cuemol_style ray in headless mode"
-                )
-            cmd.draw(width, height, quiet=1)
+            cmd.draw(width, height, antialias=0, quiet=1)
             data = cmd.png(None, prior=1, quiet=1)
+        if not ray:
             errors = [
                 d.error
                 for e in manager.entries.values()
@@ -187,9 +356,13 @@ def image(manager, filename, width, height, ray):
             finally:
                 scratch.unlink(missing_ok=True)
     finally:
+        manager.busy = busy
         manager.pool.show_selection = show_selection
+        manager.pool.raster_scale = raster_scale
         for name in temporary:
             cmd.delete(name)
+        if prepared:
+            manager.pool.hatch.key = None
         for name in disabled:
             cmd.enable(name)
         if cmd.get_frame() != frame:
@@ -198,6 +371,7 @@ def image(manager, filename, width, height, ray):
             cmd.set("sculpting", sculpting)
         if playing:
             cmd.mplay()
+        manager.prepare_view()
         cmd.rebuild()
         cmd.refresh()
     return str(path)

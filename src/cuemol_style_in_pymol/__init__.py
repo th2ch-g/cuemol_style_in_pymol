@@ -137,8 +137,9 @@ def cuemol_style(
 def __init_plugin__(app=None):
     from pymol import cmd
     from pymol.shortcut import Shortcut
-    from .presets import COLORS, PROFILES, REPRESENTATIONS
+
     from .controller import manager_for
+    from .presets import COLORS, PROFILES, REPRESENTATIONS
 
     cmd.extend("cuemol_style", cuemol_style)
     cmd.auto_arg[0]["cuemol_style"] = [

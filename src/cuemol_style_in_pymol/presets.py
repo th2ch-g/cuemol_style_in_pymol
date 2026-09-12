@@ -41,6 +41,38 @@ OPENGL_MATERIALS = {
     "spec_metal": (0.2, 0.5, 0.7, 76.8),
 }
 
+# Ambient, diffuse, Blinn weight/exponent, brilliance, Phong weight/exponent,
+# reflection, and metallic highlight tint from the POV finish definitions.
+POV_MATERIALS = {
+    "default": (0.2, 0.8, 0.4, 100.0, 1.0, 0.0, 40.0, 0.0, False),
+    "shadow": (0.75, 0.0, 0.0, 50.0, 1.0, 0.0, 40.0, 0.0, False),
+    "nolighting": (1.0, 0.0, 0.0, 50.0, 1.0, 0.0, 40.0, 0.0, False),
+    "matte": (0.3, 0.6, 0.0, 50.0, 1.0, 0.0, 40.0, 0.0, False),
+    "toon1": (0.0, 0.8, 0.0, 50.0, 0.0, 0.0, 40.0, 0.0, False),
+    "toon2": (0.3, 0.5, 0.0, 50.0, 0.0, 10000.0, 50.0, 0.0, False),
+    "diff_metal": (0.35, 0.3, 0.8, 20.0, 2.0, 0.0, 40.0, 0.1, True),
+    "spec_metal": (0.15, 0.6, 0.8, 100.0, 5.0, 0.0, 40.0, 0.65, True),
+    "metallic_chrome": (0.15, 0.6, 0.8, 100.0, 5.0, 0.0, 40.0, 0.65, True),
+    "metallic_copper": (0.25, 0.5, 0.8, 80.0, 4.0, 0.0, 40.0, 0.5, True),
+    "stone35": (0.1, 0.6, 0.0, 50.0, 1.0, 0.0, 40.0, 0.0, False),
+    "wood31": (0.1, 0.6, 0.0, 50.0, 1.0, 0.0, 40.0, 0.0, False),
+    "wood14scl2": (0.1, 0.6, 0.0, 50.0, 1.0, 0.0, 40.0, 0.0, False),
+}
+
+# Ambient, diffuse, metallic, roughness, specular, environment reflection.
+# CueMol's current Umbreon material table is independent of its POV textures.
+PBR_MATERIALS = {
+    "default": (0.20, 0.80, 0.0, 0.3742032, 0.40, 0.00),
+    "matte": (0.30, 0.80, 0.0, 0.50, 0.00, 0.00),
+    "diff_metal": (0.35, 0.30, 1.0, 0.5491005, 0.80, 0.10),
+    "spec_metal": (0.15, 0.60, 1.0, 0.3742032, 0.80, 0.65),
+    "metallic_chrome": (0.20, 0.80, 1.0, 0.05, 0.50, 0.00),
+    "metallic_copper": (0.20, 0.80, 1.0, 0.15, 0.50, 0.00),
+    "stone35": (0.20, 0.80, 0.0, 0.85, 0.25, 0.00),
+    "wood31": (0.20, 0.80, 0.0, 0.45, 0.50, 0.00),
+    "wood14scl2": (0.20, 0.80, 0.0, 0.45, 0.50, 0.00),
+}
+
 REPRESENTATIONS = (
     "auto",
     "ribbon",
@@ -95,7 +127,7 @@ PROFILES.update(
     }
 )
 for _name in ("toon1", "toon2"):
-    PROFILES[_name] = replace(PROFILES[_name], edges="edges", back=True)
+    PROFILES[_name] = replace(PROFILES[_name], edges="edges")
 
 
 def resolve(style, representation=None, edge="auto", edge_width=None):

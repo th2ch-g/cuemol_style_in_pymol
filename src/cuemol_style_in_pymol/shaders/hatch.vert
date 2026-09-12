@@ -8,4 +8,5 @@ void main() {
     normalEye = gl_NormalMatrix * gl_Normal;
     baseColor = gl_Color.rgb;
     gl_Position = gl_ProjectionMatrix * eye;
+    gl_ClipVertex = eye;
 }
