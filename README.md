@@ -117,6 +117,7 @@ and temporary validation output stay in the ignored `.cache` directory.
 ## Use
 
 ```text
+cuemol_style
 cuemol_style richardson
 cuemol_style richardson, representation=cpk
 cuemol_style toon1
@@ -130,6 +131,7 @@ cuemol_style reset
 cuemol_style list
 ```
 
+With no arguments, `cuemol_style` applies the `ribbon` preset.
 Material and outline styles default to `ribbon`, keeping helices spiral-shaped
 even when the source uses PyMOL's cartoon display. Geometry presets such as
 `cpk`, `surface`, and `cartoon` select their named representation. Use

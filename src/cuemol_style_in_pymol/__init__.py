@@ -2,7 +2,7 @@
 
 
 def cuemol_style(
-    style="richardson",
+    style="ribbon",
     selection="all",
     representation=None,
     color="cuemol",
@@ -37,7 +37,7 @@ def cuemol_style(
 
     ARGUMENTS
 
-        style: richardson, ribbon, round_ribbon, fancy_ribbon, cartoon,
+        style: ribbon (default), richardson, round_ribbon, fancy_ribbon, cartoon,
             round_cartoon, tube, nucleic, ballstick, cpk, surface, outline,
             silhouette, default, shadow, nolighting, matte, toon1, toon2,
             diff_metal, spec_metal, metallic_chrome, metallic_copper, stone35,

@@ -27,6 +27,7 @@ mdtbx `pymol_plugins` integration registers the command automatically.
 After loading a structure, run these commands in the PyMOL command line:
 
 ```text
+cuemol_style
 cuemol_style richardson
 cuemol_style toon1
 cuemol_style toon2, selection=chain A
@@ -35,6 +36,7 @@ cuemol_style list
 help cuemol_style
 ```
 
+With no arguments, `cuemol_style` applies the `ribbon` preset.
 The default named view is `cuemol`. Applying another style with the same
 name replaces that view. `richardson` uses thin ribbons, sheet arrows,
 lighter helix undersides, colored-pencil hatching, and black contour lines.
