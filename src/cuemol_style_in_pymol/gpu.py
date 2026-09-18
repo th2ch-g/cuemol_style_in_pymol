@@ -84,9 +84,12 @@ class Pool:
         self.bytes = 0
         self.show_selection = True
         self.raster_scale = 3
+        self.precise = False
         from .hatch import HatchPass
+        from .live import LivePass
 
         self.hatch = HatchPass()
+        self.live = LivePass()
 
     def clear(self):
         from OpenGL import GL as gl
@@ -99,8 +102,10 @@ class Pool:
             for program in self.programs.values():
                 gl.glDeleteProgram(program)
             self.hatch.clear()
+            self.live.clear()
         else:
             self.hatch.__init__()
+            self.live.__init__()
         self.buffers.clear()
         self.programs.clear()
         self.bytes = 0
@@ -112,13 +117,27 @@ class Pool:
 
         if name not in self.programs:
             root = files(__package__).joinpath("shaders")
+            fragment = root.joinpath(name + ".frag").read_text()
+            if "#include pencil" in fragment:
+                reference = (
+                    b"GL_EXT_gpu_shader4" in gl.glGetString(gl.GL_EXTENSIONS).split()
+                )
+                if reference:
+                    fragment = fragment.replace(
+                        "#version 120",
+                        "#version 120\n#extension GL_EXT_gpu_shader4 : require",
+                    )
+                fragment = fragment.replace(
+                    "#include pencil",
+                    root.joinpath(
+                        "pencil.frag" if reference else "pencil_fallback.frag"
+                    ).read_text(),
+                )
             self.programs[name] = compileProgram(
                 compileShader(
                     root.joinpath(name + ".vert").read_text(), gl.GL_VERTEX_SHADER
                 ),
-                compileShader(
-                    root.joinpath(name + ".frag").read_text(), gl.GL_FRAGMENT_SHADER
-                ),
+                compileShader(fragment, gl.GL_FRAGMENT_SHADER),
                 validate=False,
             )
         return self.programs[name]
@@ -191,6 +210,10 @@ class Pool:
             gl.glGetUniformLocation(program, "background"), *drawing.background
         )
         gl.glUniform2f(gl.glGetUniformLocation(program, "fogRange"), *drawing.fog)
+        gl.glUniform1i(
+            gl.glGetUniformLocation(program, "pencilPreview"),
+            drawing.profile.material == "richardson",
+        )
         return program
 
     def draw(self, drawing):
@@ -230,7 +253,12 @@ class Pool:
             if drawing.raster_image is not None or any(
                 p.mesh.opacity >= 0.999999 for p in drawing.pieces
             ):
-                self.hatch.draw(self, drawing, modelview, projection, viewport)
+                renderer = (
+                    self.hatch
+                    if self.precise or drawing.raster_image is not None
+                    else self.live
+                )
+                renderer.draw(self, drawing, modelview, projection, viewport)
             if (
                 self.show_selection
                 and drawing.selected is not None

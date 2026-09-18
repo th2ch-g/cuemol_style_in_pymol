@@ -311,6 +311,8 @@ def image(manager, filename, width, height, ray):
     frame = cmd.get_frame()
     show_selection = manager.pool.show_selection
     raster_scale = manager.pool.raster_scale
+    precise = manager.pool.precise
+    manager.pool.precise = True
     manager.pool.show_selection = False
     temporary, disabled, prepared = [], [], []
     busy = manager.busy
@@ -359,6 +361,7 @@ def image(manager, filename, width, height, ray):
         manager.busy = busy
         manager.pool.show_selection = show_selection
         manager.pool.raster_scale = raster_scale
+        manager.pool.precise = precise
         for name in temporary:
             cmd.delete(name)
         if prepared:

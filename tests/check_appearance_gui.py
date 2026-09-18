@@ -12,6 +12,77 @@ from cuemol_style_in_pymol import cuemol_style
 from cuemol_style_in_pymol.controller import manager_for
 
 
+def check_live_pencil(cmd, widget, pump):
+    """Compare GPU body pixels with the independently tested native pencil sampler."""
+    from OpenGL import GL as gl
+    from OpenGL.GL.EXT import framebuffer_object as fb
+
+    from cuemol_style_in_pymol._edtsurf import pencil
+    from cuemol_style_in_pymol.gpu import Pool
+    from cuemol_style_in_pymol.materials import drawing_tone
+
+    cmd.delete("all")
+    cmd.frame(1)
+    cmd.pseudoatom("pencil", elem="C", vdw=1, state=1)
+    cmd.set_color("pencil_pigment", [0.25, 0.5, 0.75])
+    cmd.color("pencil_pigment", "pencil")
+    cmd.orient("pencil")
+    cmd.zoom("pencil", 1)
+    cmd.set("orthoscopic", 1)
+    entry = cuemol_style(
+        "richardson", representation="cpk", color="keep", quiet=1, _self=cmd
+    )
+    pump()
+    drawing = entry.drawings["pencil"][0]
+    pool = manager_for(cmd).pool
+    with widget:
+        widget.paintGL()
+        if b"GL_EXT_gpu_shader4" not in gl.glGetString(gl.GL_EXTENSIONS).split():
+            cuemol_style("reset", quiet=1, _self=cmd)
+            return None
+        width, height = pool.live.size
+        framebuffer = int(gl.glGetIntegerv(gl.GL_FRAMEBUFFER_BINDING))
+        read_buffer = int(gl.glGetIntegerv(gl.GL_READ_BUFFER))
+        try:
+            fb.glBindFramebufferEXT(gl.GL_FRAMEBUFFER, pool.live.framebuffer)
+            arrays = []
+            for attachment in (gl.GL_COLOR_ATTACHMENT0, gl.GL_COLOR_ATTACHMENT1):
+                gl.glReadBuffer(attachment)
+                arrays.append(
+                    np.asarray(
+                        gl.glReadPixels(0, 0, width, height, gl.GL_RGBA, gl.GL_FLOAT)
+                    ).reshape(height, width, 4)
+                )
+        finally:
+            fb.glBindFramebufferEXT(gl.GL_FRAMEBUFFER, framebuffer)
+            gl.glReadBuffer(read_buffer)
+        fallback = Pool()
+        try:
+            with patch.object(gl, "glGetString", return_value=b""):
+                assert fallback.program("body")
+        finally:
+            for program in fallback.programs.values():
+                gl.glDeleteProgram(program)
+    actual, surface = arrays
+    mask = surface[:, :, 3] < 0
+    yy, xx = np.nonzero(mask)
+    assert len(xx) > 1000
+    fog = np.clip(
+        (drawing.fog[1] + surface[mask, 3]) / (drawing.fog[1] - drawing.fog[0]), 0, 1
+    )
+    tones = drawing_tone(surface[mask, :3], fog=fog)
+    colors = np.tile(drawing.pieces[0].mesh.colors[0], (len(xx), 1))
+    expected = pencil(
+        np.c_[(xx + 0.5) / 3, (height - yy - 0.5) / 3], tones, colors, False
+    )
+    difference = np.abs(actual[mask, :3] - expected) * 255
+    error = float(difference.mean())
+    assert error < 0.3, error  # RGBA8 quantization contributes about 0.25/255.
+    assert np.percentile(difference, 99.9) < 1.0
+    cuemol_style("reset", quiet=1, _self=cmd)
+    return error
+
+
 def check(output):
     from OpenGL import GL as gl
     from pymol import CmdException
@@ -42,6 +113,21 @@ def check(output):
         manager = manager_for(cmd)
         entry = cuemol_style("richardson", quiet=1, _self=cmd)
         pump()
+        live_errors = []
+        for orthoscopic in (0, 1):
+            cmd.set("orthoscopic", orthoscopic)
+            images = []
+            for tile in (510, 96):
+                with patch.object(manager.pool.live, "tile_size", tile):
+                    cmd.turn("y", 0)
+                    with widget:
+                        widget.paintGL()
+                    image_path = output / f"live-{orthoscopic}-{tile}.png"
+                    assert widget.grabFramebuffer().save(str(image_path))
+                    images.append(pixels(image_path.read_bytes()).astype(float))
+            live_error = float(np.abs(images[0] - images[1]).mean())
+            assert live_error < 0.1, live_error
+            live_errors.append(live_error)
         for name, tile in (("single", 510), ("tiled", 96)):
             with patch.object(manager.pool.hatch, "tile_size", tile):
                 cuemol_style(
@@ -151,6 +237,7 @@ def check(output):
         else:
             raise AssertionError("The sample budget must reject oversized exports")
         assert (output / "alpha.png").read_bytes() == saved
+        assert not manager.pool.precise
         cuemol_style("reset", quiet=1, _self=cmd)
         cmd.delete("all")
         cmd.set("opaque_background", 1)
@@ -216,8 +303,11 @@ def check(output):
             )
             assert not next(manager.active_drawings()).error
         cuemol_style("reset", quiet=1, _self=cmd)
+        pencil_error = check_live_pencil(cmd, widget, pump)
     report = {
         "tile_mean_error_255": error,
+        "live_tile_mean_errors_255": live_errors,
+        "live_pencil_native_mean_error_255": pencil_error,
         "transfer_state_restored": True,
         "alpha_camera_and_nonsequential_states": True,
         "failed_export_preserved_file": True,

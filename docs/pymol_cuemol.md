@@ -42,7 +42,13 @@ Rotation and zoom update the GPU rendering immediately.
 
 The `richardson` pass uses warm paper, three pencil layers at 55, -35, and
 80 degrees, pigment-colored strokes, and unmarked highlights. Flat helix
-undersides are lighter; rounded rails retain their pigment. Normals and
+undersides are lighter; rounded rails retain their pigment. Opaque interactive
+display evaluates pencil strokes and depth/normal contours entirely on the GPU.
+Tiled 3x sampling retains fine strokes and smooth silhouettes, avoiding CPU
+rasterization and framebuffer downloads while rotating or playing states.
+Plain materials without outlines draw directly.
+
+Dedicated PNG and ray keep the precision path: normals and
 pigments are rasterized at 3x, then a native sampler evaluates the reference
 hash/noise, stroke envelopes, and per-sample layer multiplication. Tone includes
 depth fog. Bounded render tiles prevent oversized framebuffer allocations.
@@ -173,7 +179,10 @@ expensive to prepare. `cuemol_style list` reports preparation time and
 mesh/native CGO storage for each active view. Retaining ray geometry for all
 states increases preparation time, memory use, and saved session size.
 
-The separate render tile uses at most about 126 MiB of GPU attachments plus
+The interactive framebuffer uses 24 bytes per supersample in a reusable 3x
+tile: about 54.4 MiB for a 510-pixel tile with a two-pixel overlap. Wider outlines
+increase the overlap; allocations are capped at 256 MiB and the driver's texture
+limit. The separate export render tile uses at most about 126 MiB of GPU attachments plus
 temporary CPU arrays. Contours use a full-view 3x depth/normal image to keep
 chain connectivity independent of tile boundaries. Native camera samples can
 be larger than the base mesh: each covered 1/3-pixel sample uses two triangles. Inactive states
@@ -305,8 +314,10 @@ weak/strong contour hysteresis, normal continuity, and a mesh segment probe to
 reject connected folds. Chains shorter than four output pixels are filtered;
 continuous junction bars are reconnected before two Chaikin smoothing passes
 and .4-output-pixel simplification. Round bands use outside alignment with a
-half-output-pixel inner pad. GPU, transparent samples, and dedicated ray use
+half-output-pixel inner pad. Dedicated GPU PNG, transparent samples, and dedicated ray use
 this shared contour path, independent of the triangles' internal diagonals.
+Interactive contours use local depth and tangent-plane continuity instead of
+tracing and smoothing full image-space chains.
 
 Richardson uses paper `#F0ECDD`, angles 55/-35/80, thresholds .92/.62/.34,
 ink scales 1/.74/.38, pressure floor .4, and an absolute display-luma contrast
@@ -316,8 +327,13 @@ minimum .15. At 3x, the effective pitch is 2/3 output pixel and full width is
 Hash/noise and stroke coverage have independent numerical reference tests.
 Layers are multiplied at each supersample before averaging. The tone recipe
 uses diffuse .85, ambient .05, wrap .5, rim power 3.5, rim bias .35, white point
-1.2, gamma 2.4, and a highlight knee from .81 to .86. Only retained standard-ray
-geometry uses an averaged pencil approximation.
+1.2, gamma 2.4, and a highlight knee from .81 to .86. On contexts supporting
+`GL_EXT_gpu_shader4`, interactive GLSL evaluates the reference integer hash,
+noise, stroke envelopes, and per-sample layer multiplication on the same 3x
+grid. Older contexts use approximate floating-point noise while retaining the
+paper, angles, thresholds, ink scales, and tone recipe. Live contour joins remain
+an approximation of the export's traced and smoothed paths.
+Retained standard-ray geometry uses an averaged pencil approximation.
 
 ## Validation
 
@@ -344,7 +360,9 @@ aligns exact coordinates, atom colors, secondary structure, orthographic or
 perspective cameras, image dimensions, and renderer properties. Richardson is
 compared on the same opaque paper background in both engines; other profiles
 use white. The plugin itself never changes the user's background. Re-run with
-`--angle`, `--zoom`, `--perspective`, `--transparency`, or `--ray`. Runtime version,
+`--angle`, `--zoom`, `--perspective`, `--transparency`, `--live`, or `--ray`.
+`--live` captures the interactive framebuffer instead of the precision export.
+Runtime version,
 module digest, manifests, logs, images, numerical differences, and contact sheets
 are stored in the ignored output directory. Foreground IoU includes shading;
 it is not a pure geometric accuracy measure. No image registration is applied.
@@ -381,6 +399,19 @@ Contour placement and renderer-group blending use the shared screen pipeline
 described above. The table reports the measured image errors for these cameras
 and scenes; it does not establish pixel equality for arbitrary inputs.
 
+The interactive path was also compared directly with CueMol 2.3.15.530
+(`af9509e`) using the same aligned input. The live contour approximation has
+larger differences than precision exports, especially at occluding joins:
+
+| Live condition | Profile | Foreground IoU | MAE | Blurred MAE |
+| --- | --- | ---: | ---: | ---: |
+| Opaque, 640x480 | `toon1` | 0.9830 | 6.34 | 1.15 |
+| Opaque, 640x480 | `toon2` | 0.9562 | 8.16 | 2.15 |
+| Opaque, 640x480 | `richardson` | 0.9719 | 9.18 | 1.33 |
+| Opaque, 640x480 | `silhouette` | 0.9870 | 5.03 | 0.99 |
+| Perspective, rotated -45 degrees, zoom .8, 640x480 | `toon1` | 0.9768 | 9.05 | 1.65 |
+| Perspective, rotated -45 degrees, zoom .8, 640x480 | `richardson` | 0.9654 | 11.50 | 2.00 |
+
 Run the additional GUI regression checks with:
 
 ```sh
@@ -394,19 +425,25 @@ restoration, and overlapping transparent groups. The GPU/ray overlap comparison
 measured a foreground MAE of 0.23/255. The benchmark uses 500
 residues and 100 synthetic states at 1280x720, recording preparation, warmup,
 CPU/GPU storage, peak process RSS, rotation FPS, explicit state-switch FPS,
-and actual movie draw rate. Screen contours, dense material sampling, and pencil
-evaluation add work for each camera or state change. Reproducible images, builds,
+and actual movie draw rate. Rotation/state benchmarks force completed OpenGL
+draws instead of counting Qt repaint requests that may be coalesced. Opaque live
+styles bypass the CPU contour/pencil path; dense transparent samples and precision
+exports remain more expensive. Reproducible images, builds,
 and reports stay ignored; published README
 gallery PNGs are versioned and regenerated with `tests/render_gallery.py`.
 
-The measured 500-residue/100-state run used PyMOL 3.1.0 on Apple M4 with the
-OpenGL 2.1 compatibility context, `medium` quality, and a 1280x720 viewport.
-The input repeated a generated peptide with deterministic state displacements.
-Preparation took 38.52 s and warmup 62.68 s. Rotation achieved 1.86 FPS,
-explicit state switching 1.78 FPS, and movie drawing 1.78 states/s. The 30/15
-FPS targets were not met. Mesh, native CGO, and GPU vertex storage were 465.32,
-1469.86, and 252.03 MiB; peak process RSS was 3286.16 MiB, including the preceding
-GUI export checks. The last framebuffer tile occupied 26.47 MiB (the per-tile
-bound is 126 MiB). The separate surface preparation took 0.090 s and produced
-1.20 MiB of mesh data. These measurements describe this synthetic workload on
-one host, not a minimum performance guarantee.
+The additional appearance checks compare tiled and untiled live output in both
+camera modes, compile the fallback shader, and compare GPU pencil body pixels
+against the independently tested native sampler. The latter measured an average
+error of 0.154/255, including RGBA8 attachment quantization.
+
+Run a single profile benchmark independently of the gallery checks:
+
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python tests/check_cuemol_style.py --gui --benchmark-only --benchmark-style richardson --output .cache/benchmark-richardson
+```
+
+Use `--benchmark-style toon1` or `ribbon` for the same workload with other
+materials. The generated report includes preparation time, peak RSS, mesh/native
+CGO/GPU storage, and actual rotation and playback rates. Results depend on the
+OpenGL driver and scene coverage; retain machine-specific reports in `.cache/`.

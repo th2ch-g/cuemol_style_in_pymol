@@ -84,7 +84,9 @@ def main():
     parser.add_argument("--angle", type=float, default=0)
     parser.add_argument("--zoom", type=float, default=1)
     parser.add_argument("--perspective", action="store_true")
-    parser.add_argument("--ray", action="store_true")
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument("--ray", action="store_true")
+    output_mode.add_argument("--live", action="store_true")
     parser.add_argument("--transparency", type=float, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -148,14 +150,21 @@ def main():
                 _self=cmd,
             )
             pump()
-            cuemol_style(
-                "ray" if args.ray else "png",
-                filename=str(args.output / f"{name}-pymol.png"),
-                width=args.width,
-                height=args.height,
-                quiet=1,
-                _self=cmd,
-            )
+            image_path = str(args.output / f"{name}-pymol.png")
+            if args.live:
+                with widget:
+                    widget.paintGL()
+                if not widget.grabFramebuffer().save(image_path):
+                    raise RuntimeError("Could not save the live framebuffer")
+            else:
+                cuemol_style(
+                    "ray" if args.ray else "png",
+                    filename=image_path,
+                    width=args.width,
+                    height=args.height,
+                    quiet=1,
+                    _self=cmd,
+                )
             drawing = entry.drawings["molecule"][0]
             if drawing.error or drawing.matrices is None:
                 raise RuntimeError(drawing.error or "The drawing callback did not run")
@@ -203,7 +212,11 @@ def main():
                 "perspective": args.perspective,
                 "hatching": name == "richardson",
                 "transparent_background": False,
-                "pymol_export": "ray" if args.ray else "GPU PNG",
+                "pymol_export": "GPU live"
+                if args.live
+                else "ray"
+                if args.ray
+                else "GPU PNG",
                 "atoms": [
                     {
                         "name": a.name,

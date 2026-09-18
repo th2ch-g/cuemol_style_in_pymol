@@ -393,6 +393,43 @@ def gui_checks(cmd, widget, pump, output, style, report, structure):
         report["renderer"] = gl.glGetString(gl.GL_RENDERER).decode()
     peptide(cmd, structure)
     registration_checks(cmd, report)
+    # Interactive drawing must never re-enter the precision CPU rasterizer or
+    # download full framebuffer images during rotation.
+    with (
+        patch(
+            "cuemol_style_in_pymol.raster.buffers",
+            side_effect=AssertionError("CPU contour pass"),
+        ),
+        patch(
+            "cuemol_style_in_pymol.hatch.pencil",
+            side_effect=AssertionError("CPU pencil pass"),
+        ),
+        patch.object(
+            gl, "glReadPixels", side_effect=AssertionError("GPU image readback")
+        ),
+    ):
+        for profile in (
+            "toon1",
+            "toon2",
+            "outline",
+            "silhouette",
+            "richardson",
+            "ribbon",
+        ):
+            entry = style(profile, quiet=1, _self=cmd)
+            drawing = next(manager.active_drawings())
+            count = drawing.draws
+            for angle in (3, -3):
+                cmd.turn("y", angle)
+                with widget:
+                    widget.paintGL()
+                    gl.glFinish()
+            assert drawing.draws >= count + 2 and not drawing.error
+            assert not manager.pool.precise
+            style("reset", _self=cmd)
+    report["interactive_gpu"] = (
+        "six styles rotate without CPU contours, pencil sampling, or image readback"
+    )
     cmd.set("internal_gui", 0)
     cmd.set("internal_feedback", 0)
     baseline = snapshot(cmd)
@@ -655,6 +692,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument("--benchmark-only", action="store_true")
+    parser.add_argument("--benchmark-style", default="richardson")
     parser.add_argument(
         "--installed",
         action="store_true",
@@ -677,14 +716,22 @@ def main():
         with qt_session() as (cmd, widget, pump):
             from cuemol_style_in_pymol import cuemol_style
 
-            gui_checks(
-                cmd, widget, pump, args.output, cuemol_style, report, args.structure
-            )
-            if args.benchmark:
+            if not args.benchmark_only:
+                gui_checks(
+                    cmd, widget, pump, args.output, cuemol_style, report, args.structure
+                )
+            if args.benchmark or args.benchmark_only:
                 from cuemol_benchmark import benchmark
 
                 benchmark(
-                    cmd, widget, pump, args.output, cuemol_style, report, args.structure
+                    cmd,
+                    widget,
+                    pump,
+                    args.output,
+                    cuemol_style,
+                    report,
+                    args.structure,
+                    args.benchmark_style,
                 )
     else:
         from cuemol_style_in_pymol import cuemol_style

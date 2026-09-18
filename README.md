@@ -147,9 +147,14 @@ Standard `ray` and `png, ray=1` use retained native CGO. The dedicated ray
 operation adds camera-dependent outline geometry and material samples.
 The `richardson` GPU profile uses warm paper, three layers of irregular
 colored-pencil strokes, bright unmarked highlights, and dark contour lines.
-Opaque display uses a tiled 3x render pass. Screen-space depth and normal
-continuity define joined contours; internal sheet triangulation is never drawn
-as an outline. Transparent CGO and dedicated ray share visible-sample colors and
+Opaque interactive display evaluates materials, pencil strokes, and depth/normal
+contours on the GPU, without CPU image sampling or framebuffer downloads.
+Tiled 3x sampling preserves fine strokes and smooth edges. With
+`GL_EXT_gpu_shader4`, the pencil shader uses the reference integer hash and
+stroke equations; older contexts use an approximate noise fallback.
+Live contours use local surface continuity. Dedicated PNG additionally traces
+and smooths joined contours, without outlining internal sheet triangulation.
+Transparent CGO and dedicated ray share visible-sample colors and
 contours on the same 3x grid. Dedicated exports combine completed transparent
 renderer passes in display space, with alpha coverage preserved. These paths favor
 appearance over frame rate and can require substantial preparation time and

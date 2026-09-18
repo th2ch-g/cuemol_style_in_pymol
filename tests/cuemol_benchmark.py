@@ -10,7 +10,9 @@ from unittest.mock import patch
 import numpy as np
 
 
-def benchmark(cmd, widget, pump, output, style, report, structure=None):
+def benchmark(
+    cmd, widget, pump, output, style, report, structure=None, profile="richardson"
+):
     from chempy.models import Indexed
     from OpenGL import GL as gl
     from pymol.Qt import QtWidgets
@@ -85,7 +87,7 @@ def benchmark(cmd, widget, pump, output, style, report, structure=None):
     # Recompute PyMOL's scene rectangle after hiding its internal panels.
     with widget:
         widget.resizeGL(widget.width(), widget.height())
-    entry = style("richardson", quality="medium", quiet=1, _self=cmd)
+    entry = style(profile, quality="medium", quiet=1, _self=cmd)
     manager = manager_for(cmd)
     for _ in range(5):
         # Invalidate PyMOL's cached image after Qt has resized the widget.
@@ -102,10 +104,11 @@ def benchmark(cmd, widget, pump, output, style, report, structure=None):
     )
 
     def render():
-        widget.repaint()
-        QtWidgets.QApplication.processEvents()
         with widget:
+            # Qt may coalesce repaint requests; count actual completed draws.
+            widget.paintGL()
             gl.glFinish()
+        QtWidgets.QApplication.processEvents()
 
     # Warm all states before the timed passes, retaining the bounded GPU cache.
     start = perf_counter()
@@ -143,6 +146,7 @@ def benchmark(cmd, widget, pump, output, style, report, structure=None):
         movie_seconds = perf_counter() - start
         cmd.mstop()
     stats = {
+        "profile": profile,
         "residues": 500,
         "states": 100,
         "quality": "medium",
@@ -154,6 +158,7 @@ def benchmark(cmd, widget, pump, output, style, report, structure=None):
         "native_cgo_mib": entry.cgo_nbytes / 1024**2,
         "gpu_cache_mib": manager.pool.bytes / 1024**2,
         "framebuffer_mib": manager.pool.hatch.bytes / 1024**2,
+        "live_framebuffer_mib": manager.pool.live.bytes / 1024**2,
         "rotation_fps": rotation_fps,
         "state_switch_fps": playback_fps,
         "movie_drawn_states_per_second": len(seen) / movie_seconds,
