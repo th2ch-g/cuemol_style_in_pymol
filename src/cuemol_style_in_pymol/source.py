@@ -78,7 +78,17 @@ def atom_selection(cmd, keys):
 
 def read(cmd, selection, budget_bytes=None):
     """Capture all states before entering any OpenGL callback."""
-    objects = cmd.get_object_list(f"({selection})")
+    # ChimeraX keeps native molecular copies alongside the original atoms.
+    # Use its plain session metadata without importing or requiring the package.
+    managed = getattr(cmd._pymol.session, "chimerax_style_state", {})
+    generated = {
+        obj
+        for view in managed.get("views", {}).values()
+        for obj in view.get("objects", ())
+    }
+    objects = [
+        obj for obj in cmd.get_object_list(f"({selection})") if obj not in generated
+    ]
     if not objects:
         raise ValueError("The selection contains no molecular objects")
     rows = []
@@ -88,6 +98,8 @@ def read(cmd, selection, budget_bytes=None):
         "s.stick_transparency,s.sphere_transparency,s.transparency))",
         space={"out": rows},
     )
+    sources = set(objects)
+    rows = [row for row in rows if row[0] in sources]
     if not rows:
         raise ValueError("The selection contains no atoms")
     properties = {(r[0], r[1]): r[2:] for r in rows}

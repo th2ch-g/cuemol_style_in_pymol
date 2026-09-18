@@ -50,6 +50,13 @@ Contours are extracted from the visible depth/normal image, traced across pixel
 boundaries, joined at occlusion junctions, smoothed, and rasterized as round
 bands. Internal triangulation edges do not participate in contour extraction.
 
+Molecular selections use original source objects. Native copies owned by
+`chimerax_style` are excluded, including after a session reload, so applying
+or refreshing a style never treats those display copies as input structures.
+Ordinary source objects whose names start with an underscore remain supported.
+Each command manages its own views; reset the previous command before switching
+renderers on the same atoms to replace its display and restore its settings.
+
 ## Styles and controls
 
 Style names

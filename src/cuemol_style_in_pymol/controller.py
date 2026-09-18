@@ -49,14 +49,14 @@ class Manager:
 
             self.widget, self.events = attach(self)
 
-    def source_settings(self, obj, vis):
+    def source_settings(self, obj, enabled):
         from pymol.setting import _get_index
 
         explicit = {row[0]: row[2] for row in self.cmd.get_object_settings(obj) or []}
         return {
             "state": explicit.get(_get_index("state")),
             "all_states": explicit.get(_get_index("all_states")),
-            "enabled": vis[obj][0],
+            "enabled": obj in enabled,
         }
 
     def release_gpu(self):
@@ -222,9 +222,9 @@ class Manager:
                     and transparency != 1
                 ):
                     raise ValueError("The selected atoms produced no drawable geometry")
-                vis = self.cmd.get_vis()
+                enabled = set(self.cmd.get_names("objects", enabled_only=1))
                 object_settings = {
-                    obj: self.source_settings(obj, vis) for obj in drawings
+                    obj: self.source_settings(obj, enabled) for obj in drawings
                 }
                 candidate = Entry(name, options, saved, drawings, object_settings)
                 if candidate.cgo_nbytes > budget:
@@ -298,13 +298,13 @@ class Manager:
             self.apply(**self.entries[key].options)
 
     def active_drawings(self):
-        vis = self.cmd.get_vis()
+        enabled = set(self.cmd.get_names("objects", enabled_only=1))
         for entry in self.entries.values():
-            if not vis.get(entry.name, [0])[0]:
+            if entry.name not in enabled:
                 continue
             for source_name, drawings in entry.drawings.items():
                 name = drawings[0].name
-                if not vis.get(name, [0])[0] or not vis.get(source_name, [0])[0]:
+                if name not in enabled or source_name not in enabled:
                     continue
                 if self.cmd.get_setting_int("all_states", name):
                     yield from drawings
@@ -319,7 +319,7 @@ class Manager:
         if self.busy:
             return
         names = set(self.cmd.get_names("objects"))
-        vis = self.cmd.get_vis()
+        enabled = set(self.cmd.get_names("objects", enabled_only=1))
         for key, entry in list(self.entries.items()):
             errors = [d.error for ds in entry.drawings.values() for d in ds if d.error]
             if errors:
@@ -336,7 +336,7 @@ class Manager:
                 self.reset(key)
                 continue
             for i, obj in enumerate(entry.drawings, 1):
-                current = self.source_settings(obj, vis)
+                current = self.source_settings(obj, enabled)
                 previous = entry.object_settings[obj]
                 if current != previous:
                     for target in (
