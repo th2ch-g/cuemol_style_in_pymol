@@ -211,7 +211,7 @@ class Pool:
         )
         gl.glUniform1i(
             gl.glGetUniformLocation(program, "perspective"),
-            abs(projection[3, 3]) < 0.5,
+            int(abs(projection[3, 3]) < 0.5),
         )
         gl.glUniform3f(
             gl.glGetUniformLocation(program, "background"), *drawing.background

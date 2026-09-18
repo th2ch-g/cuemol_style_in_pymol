@@ -16,6 +16,46 @@ from cuemol_style_in_pymol.sampling import (
 )
 
 
+@pytest.mark.filterwarnings("error:.*np.bool_.*:DeprecationWarning")
+@pytest.mark.parametrize("style", ["ribbon", "toon1", "richardson"])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("perspective", [False, True])
+def test_body_uniforms_accept_numpy_projection(monkeypatch, style, dtype, perspective):
+    from ctypes import CFUNCTYPE, c_int
+
+    from OpenGL import GL as gl
+
+    from cuemol_style_in_pymol.gpu import Drawing, Pool
+    from cuemol_style_in_pymol.presets import PROFILES
+
+    values = {}
+    locations = {"principled": 0, "material": 1, "perspective": 2, "pencilPreview": 3}
+
+    # Exercise the C integer boundary without requiring an OpenGL context.
+    # NumPy 1.x deprecations must fail here just like stricter NumPy versions.
+    @CFUNCTYPE(None, c_int, c_int)
+    def uniform(location, value):
+        values[location] = value
+
+    monkeypatch.setattr(gl, "glUniform1i", uniform)
+    monkeypatch.setattr(
+        gl, "glGetUniformLocation", lambda program, name: locations.get(name, -1)
+    )
+    for name in ("glUseProgram", "glUniform2f", "glUniform3f", "glUniform4f"):
+        monkeypatch.setattr(gl, name, lambda *args: None)
+    pool = Pool()
+    monkeypatch.setattr(pool, "program", lambda name: 7)
+    drawing = Drawing([], PROFILES[style], (0, 0, 0), pool)
+    projection = np.eye(4, dtype=dtype)
+    if perspective:
+        projection[3, 2], projection[3, 3] = -1, 0
+
+    assert pool.body_program(drawing, projection) == 7
+    assert len(values) == len(locations)
+    assert values[locations["perspective"]] == int(perspective)
+    assert values[locations["pencilPreview"]] == int(style == "richardson")
+
+
 def test_pencil_samples_match_pinned_umbreon_math():
     # Independently evaluated with Umbreon bf75c8a hatch_ink.hpp at 3x.
     samples = np.array(
