@@ -192,6 +192,14 @@ def render_group_passes(manager, width, height, ray, temporary, disabled, prepar
     view = cmd.get_view()
     background = tuple(cmd.get_color_tuple(cmd.get("bg_rgb")))
     fog = (-view[11], -view[11] + (view[16] - view[15]) / 2)
+    if ray:
+        from .ray import can_compose, compose
+
+        if can_compose(manager):
+            drawings = list(manager.active_drawings())
+            for drawing in drawings:
+                drawing.background, drawing.fog = background, fog
+            return compose(manager, drawings, matrices, disabled)
     groups = []
     callbacks = []
     for drawing in manager.active_drawings():
@@ -375,6 +383,5 @@ def image(manager, filename, width, height, ray):
         if playing:
             cmd.mplay()
         manager.prepare_view()
-        cmd.rebuild()
         cmd.refresh()
     return str(path)

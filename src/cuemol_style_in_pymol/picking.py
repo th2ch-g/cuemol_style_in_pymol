@@ -85,7 +85,27 @@ def attach(manager):
             self.timer = QtCore.QTimer(self)
             self.timer.timeout.connect(self.maintain)
             self.timer.start(100)
+            self.settle = QtCore.QTimer(self)
+            self.settle.setSingleShot(True)
+            self.settle.timeout.connect(self.refine)
+            handlers = getattr(widget, "_pymol_style_pickers", [])
+            widget._pymol_style_pickers = [*handlers, self]
             widget.installEventFilter(self)
+
+        def interact(self):
+            manager.pool.interacting = True
+            self.settle.start(150)
+
+        def refine(self):
+            if self.closed or not manager.pool.interacting:
+                return
+            if manager.busy:
+                self.settle.start(150)
+                return
+            manager.pool.interacting = False
+            # Invalidate PyMOL's cached scene outside its drawing callback.
+            manager.cmd.refresh()
+            widget.update()
 
         def maintain(self):
             try:
@@ -99,6 +119,13 @@ def attach(manager):
         def close(self):
             self.closed = True
             self.timer.stop()
+            self.settle.stop()
+            manager.pool.interacting = False
+            widget._pymol_style_pickers = [
+                handler
+                for handler in widget._pymol_style_pickers
+                if handler is not self
+            ]
             widget.removeEventFilter(self)
             self.deleteLater()
 
@@ -159,9 +186,41 @@ def attach(manager):
                     )
                     self.warned = True
 
+        def forward(self, press):
+            # Replayed native presses must bypass every sibling event filter.
+            widget._pymol_style_forwarding = True
+            self.forwarding = True
+            try:
+                QtWidgets.QApplication.sendEvent(widget, press)
+            finally:
+                self.forwarding = False
+                widget._pymol_style_forwarding = False
+
         def eventFilter(self, watched, event):
-            if self.forwarding or self.closed or manager.busy:
+            if (
+                self.forwarding
+                or getattr(widget, "_pymol_style_forwarding", False)
+                or self.closed
+                or manager.busy
+            ):
                 return False
+            kind = event.type()
+            if kind in (QtCore.QEvent.FocusOut, QtCore.QEvent.Hide):
+                self.press = None
+            if kind == QtCore.QEvent.Wheel or (
+                kind == QtCore.QEvent.MouseMove and event.buttons()
+            ):
+                self.interact()
+            elif (
+                kind
+                in (
+                    QtCore.QEvent.MouseButtonRelease,
+                    QtCore.QEvent.FocusOut,
+                    QtCore.QEvent.Hide,
+                )
+                and manager.pool.interacting
+            ):
+                self.settle.start(150)
             if event.type() == QtCore.QEvent.Paint:
                 try:
                     manager.prepare_view()
@@ -177,34 +236,41 @@ def attach(manager):
                     event.modifiers()
                     & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier)
                 ):
-                    try:
-                        atom = self.hit(event)
-                    except Exception:  # noqa: BLE001 - GUI callback boundary.
-                        return False
-                    if atom is not None:
-                        # Hold only custom presses. Replaying a native click
-                        # would trigger PyMOL's deferred background deselect.
-                        self.press = QtGui.QMouseEvent(event), atom
-                        return True
+                    # Wait until release to distinguish clicks from drags. A
+                    # drag must not wait for GPU depth readback or ray tests.
+                    self.press = QtGui.QMouseEvent(event)
+                    return True
             elif event.type() == QtCore.QEvent.MouseMove and self.press is not None:
-                press, _ = self.press
+                press = self.press
                 if (event.pos() - press.pos()).manhattanLength() <= 4:
                     return True
                 self.press = None
-                self.forwarding = True
-                try:
-                    QtWidgets.QApplication.sendEvent(widget, press)
-                finally:
-                    self.forwarding = False
+                self.forward(press)
             elif (
                 event.type() == QtCore.QEvent.MouseButtonRelease
                 and self.press is not None
                 and event.button() == QtCore.Qt.LeftButton
             ):
-                _, atom = self.press
+                press = self.press
                 self.press = None
-                self.pick(atom, bool(event.modifiers() & QtCore.Qt.ShiftModifier))
-                return True
+                # A sibling style may own the visible custom object. Native
+                # depth rejects covered geometry before choosing its picker.
+                for handler in [
+                    self,
+                    *(h for h in widget._pymol_style_pickers if h is not self),
+                ]:
+                    try:
+                        atom = handler.hit(press)
+                    except Exception:  # noqa: BLE001 - GUI callback boundary.
+                        continue
+                    if atom is not None:
+                        handler.pick(
+                            atom, bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+                        )
+                        return True
+                # Let native geometry and background clicks keep PyMOL's normal
+                # selection behavior; custom clicks never reach its picker.
+                self.forward(press)
             return False
 
     return widget, Events()

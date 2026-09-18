@@ -71,11 +71,15 @@ void main() {
     vec2 center = (gl_FragCoord.xy - viewportOrigin) * sampleScale;
     vec4 color = vec4(0.0);
     float nearest = 1.0;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            float z;
-            color += sampleColor((center + vec2(float(x), float(y))) / imageSize, z) / 9.0;
-            nearest = min(nearest, z);
+    if (sampleScale < 1.5) {
+        color = sampleColor(center / imageSize, nearest);
+    } else {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                float z;
+                color += sampleColor((center + vec2(float(x), float(y))) / imageSize, z) / 9.0;
+                nearest = min(nearest, z);
+            }
         }
     }
     if (color.a == 0.0) discard;

@@ -15,11 +15,8 @@ def bounds(pieces):
         mesh = piece.mesh
         if mesh.opacity < 0.999999 or not len(mesh.faces):
             continue
-        triangles = mesh.vertices[mesh.faces]
-        starts = np.arange(0, len(triangles), 64)
-        low = np.minimum.reduceat(triangles.min(axis=1), starts)
-        high = np.maximum.reduceat(triangles.max(axis=1), starts)
-        batch = np.ones((len(starts), 8, 4), np.float32)
+        low, high = mesh.face_bounds
+        batch = np.ones((len(low), 8, 4), np.float32)
         batch[:, :, :3] = np.where(corners, high[:, None, :], low[:, None, :])
         boxes.append(batch)
     return np.concatenate(boxes) if boxes else np.empty((0, 8, 4), np.float32)
@@ -36,6 +33,9 @@ class LivePass:
         self.textures = []
         self.size = None
         self.bytes = 0
+        self.coverage_boxes = None
+        self.coverage_key = None
+        self.coverage_cells = None
 
     def clear(self):
         from OpenGL import GL as gl
@@ -185,6 +185,9 @@ class LivePass:
 
     def coverage(self, boxes, matrix, width, height, pad):
         cell = self.cell_size
+        key = (matrix.tobytes(), width, height, pad, cell, self.cull_empty)
+        if self.coverage_boxes is boxes and self.coverage_key == key:
+            return self.coverage_cells
         nx, ny = (width + cell - 1) // cell, (height + cell - 1) // cell
         if not self.cull_empty:
             mask = np.ones((ny, nx), bool)
@@ -203,7 +206,10 @@ class LivePass:
             np.add.at(counts, (lo[:, 1], hi[:, 0]), -1)
             np.add.at(counts, (hi[:, 1], lo[:, 0]), -1)
             mask = counts.cumsum(axis=0).cumsum(axis=1)[:-1, :-1] > 0
-        return np.argwhere(mask)[:, ::-1] * cell
+        self.coverage_boxes = boxes
+        self.coverage_key = key
+        self.coverage_cells = np.argwhere(mask)[:, ::-1] * cell
+        return self.coverage_cells
 
     def draw_tile(
         self, pool, drawing, projection, viewport, offset, total, scissor, cells

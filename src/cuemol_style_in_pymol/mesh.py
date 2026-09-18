@@ -1,6 +1,7 @@
 """Indexed geometry shared by the GPU renderer, picker, and CGO exporter."""
 
 from dataclasses import dataclass
+from functools import cached_property
 
 import numpy as np
 
@@ -37,6 +38,18 @@ class Mesh:
         return sum(
             a.nbytes
             for a in (self.vertices, self.normals, self.colors, self.faces, self.owners)
+        ) + sum(a.nbytes for a in self.__dict__.get("face_bounds", ()))
+
+    @cached_property
+    def face_bounds(self):
+        """Conservative boxes for contiguous batches shared by culling and picking."""
+        if not len(self.faces):
+            return np.empty((0, 3), np.float32), np.empty((0, 3), np.float32)
+        triangles = self.vertices[self.faces]
+        starts = np.arange(0, len(triangles), 64)
+        return (
+            np.minimum.reduceat(triangles.min(axis=1), starts),
+            np.maximum.reduceat(triangles.max(axis=1), starts),
         )
 
     def edge_data(self):
@@ -91,7 +104,20 @@ def merge(meshes, opacity=1.0):
 
 def ray_hits(mesh, origin, direction):
     """Return the nearest positive Moller-Trumbore intersection and owner."""
-    p = mesh.vertices[mesh.faces]
+    low, high = mesh.face_bounds
+    parallel = np.abs(direction) < 1e-12
+    inverse = np.divide(1.0, direction, out=np.ones(3), where=~parallel)
+    a, b = (low - origin) * inverse, (high - origin) * inverse
+    near, far = np.minimum(a, b), np.maximum(a, b)
+    outside = (origin < low) | (origin > high)
+    near[:, parallel] = np.where(outside[:, parallel], np.inf, -np.inf)
+    far[:, parallel] = np.where(outside[:, parallel], -np.inf, np.inf)
+    groups = np.flatnonzero(far.min(axis=1) >= np.maximum(0, near.max(axis=1)))
+    if not len(groups):
+        return None
+    indices = (groups[:, None] * 64 + np.arange(64)).ravel()
+    indices = indices[indices < len(mesh.faces)]
+    p = mesh.vertices[mesh.faces[indices]]
     a, b = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
     h = np.cross(direction, b)
     det = np.einsum("ij,ij->i", a, h)
@@ -106,4 +132,4 @@ def ray_hits(mesh, origin, direction):
     if not good.any():
         return None
     index = np.argmin(np.where(good, t, np.inf))
-    return float(t[index]), int(mesh.owners[mesh.faces[index, 0]])
+    return float(t[index]), int(mesh.owners[mesh.faces[indices[index], 0]])

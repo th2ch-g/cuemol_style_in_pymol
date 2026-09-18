@@ -410,7 +410,9 @@ class Manager:
                         drawing.sample_budget = budget
                         if not native:
                             continue
-                        if id(drawing) not in active and drawing.sampled_bytes:
+                        if (
+                            id(drawing) not in active or self.pool.interacting
+                        ) and drawing.sampled_bytes:
                             values = []
                             for piece in drawing.pieces:
                                 if piece.mesh.opacity < 0.999999:
@@ -428,8 +430,10 @@ class Manager:
                             )
                             drawing.sampled_bytes = 0
                             drawing.sample_key = None
-                        if id(drawing) not in active or (
-                            not force and drawing.sample_key == key
+                        if (
+                            self.pool.interacting
+                            or id(drawing) not in active
+                            or (not force and drawing.sample_key == key)
                         ):
                             continue
                         values = []

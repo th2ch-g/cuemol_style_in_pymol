@@ -183,18 +183,30 @@ states increases preparation time, memory use, and saved session size.
 
 Interactive contours prepare conservative triangle-batch bounds with the meshes
 and project those bounds into a coarse coverage grid for each view. Empty tiles
-and empty parts of the composite pass are skipped without reducing the 3x
-sampling rate. These bounds count toward `cache_mb`. Pencil strokes also skip
+and empty parts of the composite pass are skipped without reducing the resting
+3x sampling rate. These bounds count toward `cache_mb`. Pencil strokes also skip
 samples outside their maximum possible reach, retaining the reference values.
 The regression harness compares culling on/off pixel-for-pixel across sparse
 atoms, rotations, and orthographic/perspective views.
+
+Mouse rotation, translation, and wheel zoom temporarily use one sample per pixel.
+The three Richardson pencil layers, colors, and material constants are retained;
+contour antialiasing is coarser while moving. After 150 ms without motion, the
+original 3x view returns. Transparent bodies use their prepared native mesh while
+moving and recover precise camera samples afterward. PNG/ray always use full
+precision. A second reusable preview tile costs about 24.1 MiB, in addition to the
+54.8 MiB resting tile in the measured large view.
+
+Picking waits until mouse release, so dragging does not read GPU depth or test
+triangles. Cached bounds cull triangle batches for actual clicks. Native picking,
+Shift selection, and sibling Mol* views share the mouse gesture safely.
 
 The interactive framebuffer uses 24 bytes per supersample in a reusable 3x
 tile: about 54.4 MiB for a 510-pixel tile with a two-pixel overlap. Wider outlines
 increase the overlap; allocations are capped at 256 MiB and the driver's texture
 limit. The separate export render tile uses at most about 126 MiB of GPU attachments plus
 temporary CPU arrays. Contours use a full-view 3x depth/normal image to keep
-chain connectivity independent of tile boundaries. Native camera samples can
+chain connectivity independent of tile boundaries. Native transparency and mixed-scene ray samples can
 be larger than the base mesh: each covered 1/3-pixel sample uses two triangles. Inactive states
 return to coarse fallback CGO instead of accumulating dense samples. Exceeding
 `cache_mb` reports an error without silently reducing quality.
@@ -226,7 +238,16 @@ grid and are downsampled before display-space group blending. Transfer buffers,
 pixel storage, framebuffers, viewport, matrices, shader programs, and GL
 attributes are restored.
 
-The dedicated `ray` operation builds camera-dependent pixel CGO, including
+The dedicated `ray` operation directly composites the same 3x color/depth samples
+when only managed geometry is visible and PyMOL gamma is 1. This avoids expanding
+covered pixels into millions of native triangles, while retaining pencil strokes,
+contours, clipping, transparency groups, and the native background. Native pixel
+triangles remain the fallback for mixed scenes and other gamma settings. The two
+paths can differ by boundary subsamples because native float32 quads have finite
+intersection precision; the analytic overlap regression has whole-image mean
+errors below 0.1/255.
+
+The fallback builds camera-dependent pixel CGO, including
 individual pencil strokes and the same joined screen contours as GPU output.
 Each covered sample has one front-facing quad at its visible depth. Hidden
 triangles and separate contour cylinders cannot accumulate extra opacity.
@@ -472,18 +493,36 @@ materials. The generated report includes preparation time, peak RSS, mesh/native
 CGO/GPU storage, and actual rotation and playback rates. Results depend on the
 OpenGL driver and scene coverage; retain machine-specific reports in `.cache/`.
 
-The NumPy 2.5.3 validation run measured Richardson preparation at 30.24 s,
-rotation at 190.9 FPS, state switching at 144.9 states/s, and movie playback at
-29.3 states/s for this workload. Mesh/native CGO/GPU storage was
-491.6/1469.9/252.0 MiB, with a 54.4 MiB live framebuffer. The complete GUI suite
-including this benchmark peaked at 6063.8 MiB RSS; preloading 100 states still
-requires substantial memory.
+The current NumPy 2.5.3 validation repeats 1CRN to 500 residues and prepares 100
+synthetic states. Richardson preparation took 34.51 s, rotation 72.0 FPS, explicit
+state switching 61.2 states/s, and movie playback 27.6 states/s at 1280 x 720.
+Mesh/native CGO/GPU storage was 660.7/1984.7/254.3 MiB, with a 54.4 MiB resting
+framebuffer and 5204.0 MiB peak process RSS. Preloading 100 states still requires
+substantial memory. These static-quality rotation measurements are separate from
+the mouse preview benchmark below.
+
+For actual mouse input, run:
+
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python \
+    tests/benchmark_drag.py cuemol toon1 richardson --structure local_protein.pdb
+```
 
 NumPy 2.5.3 is included in the real PyMOL audit. OpenGL integer uniforms receive
 Python integers, including the projection flag that previously failed with
 `numpy.bool`. Picking samples framebuffer pixel centers and the 3x depth footprint,
 so visible surfaces are selectable while native foreground objects still occlude
 them. Uniform locations are cached per OpenGL context; reset/context replacement
-clears that cache. At 3200 x 1800 on the measured 1GGG scene, toon1 reaches about
-32 FPS and Richardson 18 FPS with a 54.8 MiB contour framebuffer. Richardson at
-this large viewport remains below 30 FPS; the 3x pencil quality is retained.
+clears that cache. In the 1GGG mouse-drag benchmark at 3200 x 1800, toon1
+improved from 28.7 to 111.0 FPS and Richardson from 15.2 to 58.5 FPS. These count
+camera-changing frames with completed GPU draws, not queued Qt updates. Mouse
+press time fell from 52-55 ms to under 0.1 ms. Preparation was 0.89/0.63 s and
+mesh storage 16.0/17.0 MiB; GPU vertex storage was 14.0/14.8 MiB. Dedicated ray at
+640 x 480, four native threads, improved from 2.61/2.34 s to 0.80/0.88 s. These
+are scene/driver-dependent measurements, not universal frame-rate guarantees.
+All 26 profiles recover pixel-identical resting images after dragging.
+
+After the ray optimization, a new matched-camera comparison with CueMol
+2.3.15.530 at 320 x 240 measured foreground MAE 0.086/0.046 for
+metallic_copper/metallic_chrome, 2.284 for Richardson, and 2.982 for toon1.
+The metallic parameters and molecular colors are unchanged.

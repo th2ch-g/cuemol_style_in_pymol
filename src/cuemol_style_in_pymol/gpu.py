@@ -44,6 +44,9 @@ class Drawing:
     def __post_init__(self):
         from .live import bounds
 
+        for piece in self.pieces:
+            # Build acceleration data before any draw or mouse callback.
+            piece.mesh.face_bounds
         self.bounds = (
             bounds(self.pieces)
             if self.profile.edges != "none" or self.profile.material == "richardson"
@@ -93,11 +96,15 @@ class Pool:
         self.show_selection = True
         self.raster_scale = 3
         self.precise = False
+        self.interacting = False
         from .hatch import HatchPass
         from .live import LivePass
 
         self.hatch = HatchPass()
         self.live = LivePass()
+        self.preview = LivePass()
+        self.preview.scale = 1
+        self.preview.tile_size = 1020
 
     def clear(self):
         from OpenGL import GL as gl
@@ -111,9 +118,11 @@ class Pool:
                 gl.glDeleteProgram(program)
             self.hatch.clear()
             self.live.clear()
+            self.preview.clear()
         else:
             self.hatch.__init__()
             self.live.__init__()
+            self.preview.__init__()
         self.buffers.clear()
         self.programs.clear()
         self.uniforms.clear()
@@ -269,6 +278,8 @@ class Pool:
                 renderer = (
                     self.hatch
                     if self.precise or drawing.raster_image is not None
+                    else self.preview
+                    if self.interacting
                     else self.live
                 )
                 renderer.draw(self, drawing, modelview, projection, viewport)

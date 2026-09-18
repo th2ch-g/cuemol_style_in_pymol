@@ -176,9 +176,7 @@ def headless_checks(cmd, output, style, report):
             raise AssertionError("A failed build must raise")
     assert manager.entries["cuemol"] is previous
     enabled = set(cmd.get_names("objects", enabled_only=1))
-    with patch.object(
-        export, "settings", side_effect=RuntimeError("injected export failure")
-    ):
+    with patch.object(cmd, "ray", side_effect=RuntimeError("injected export failure")):
         try:
             style("ray", filename=str(output / "must_not_exist.png"), _self=cmd)
         except CmdException:
@@ -545,19 +543,31 @@ def gui_checks(cmd, widget, pump, output, style, report, structure):
         round(x / widget.devicePixelRatioF()),
         round(widget.height() - y / widget.devicePixelRatioF()),
     )
-    QTest.mousePress(widget, QtCore.Qt.LeftButton, pos=start)
-    QtWidgets.QApplication.sendEvent(
-        widget,
-        QtGui.QMouseEvent(
-            QtCore.QEvent.MouseMove,
-            QtCore.QPointF(start + QtCore.QPoint(90, 40)),
-            QtCore.Qt.NoButton,
-            QtCore.Qt.LeftButton,
-            QtCore.Qt.NoModifier,
-        ),
-    )
-    QTest.mouseRelease(widget, QtCore.Qt.LeftButton, pos=start + QtCore.QPoint(90, 40))
-    pump()
+    with patch.object(
+        manager.events, "hit", side_effect=AssertionError("Drag picking")
+    ) as pick:
+        QTest.mousePress(widget, QtCore.Qt.LeftButton, pos=start)
+        QtWidgets.QApplication.sendEvent(
+            widget,
+            QtGui.QMouseEvent(
+                QtCore.QEvent.MouseMove,
+                QtCore.QPointF(start + QtCore.QPoint(90, 40)),
+                QtCore.Qt.NoButton,
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.NoModifier,
+            ),
+        )
+        assert manager.pool.interacting
+        with widget:
+            widget.paintGL()
+            gl.glFinish()
+        assert manager.pool.preview.bytes > 0
+        QTest.mouseRelease(
+            widget, QtCore.Qt.LeftButton, pos=start + QtCore.QPoint(90, 40)
+        )
+        pick.assert_not_called()
+    pump(0.3)
+    assert not manager.pool.interacting
     assert not np.allclose(cmd.get_view(), before)
     cmd.set_view(before.tolist())
     cmd.deselect()
@@ -734,9 +744,14 @@ def main():
                     args.benchmark_style,
                 )
     else:
+        from cuemol_ray_checks import compare_ray_paths
+
         from cuemol_style_in_pymol import cuemol_style
 
         headless_checks(pymol.cmd, args.output, cuemol_style, report)
+        report["ray_sample_composition"] = compare_ray_paths(
+            pymol.cmd, args.output / "ray-composition"
+        )
     report["elapsed_seconds"] = perf_counter() - start
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2), flush=True)
