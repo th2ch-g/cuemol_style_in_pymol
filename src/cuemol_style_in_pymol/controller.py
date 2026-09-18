@@ -178,6 +178,8 @@ class Manager:
                         )
                 drawings = {}
                 cache_size = 0
+                view = self.cmd.get_view()
+                fog = (-view[11], -view[11] + (view[16] - view[15]) / 2)
                 for obj, frames in states.items():
                     drawings[obj] = []
                     for frame in frames:
@@ -209,6 +211,7 @@ class Manager:
                                 profile,
                                 edge_rgb,
                                 self.pool,
+                                fog=fog,
                                 sample_budget=budget,
                                 anchors=frame.coords,
                                 keys=tuple((a.model, a.index) for a in frame.atoms),

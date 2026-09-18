@@ -111,6 +111,27 @@ def check(output):
         cmd.bg_color("white")
         baseline = snapshot(cmd)
         manager = manager_for(cmd)
+        # The first draw can precede the Qt maintenance timer on a large display.
+        widget.setFixedSize(round(3200 / ratio), round(1800 / ratio))
+        pump()
+        with widget:
+            widget.resizeGL(widget.width(), widget.height())
+        cmd.set("orthoscopic", 0)
+        with patch.object(manager, "prepare_view"):
+            initial = cuemol_style("richardson", quiet=1, _self=cmd)
+            with widget:
+                widget.paintGL()
+            drawing = initial.drawings["protein"][0]
+            assert drawing.draws > 0 and not drawing.error, drawing.error
+            assert tuple(drawing.matrices[2][2:]) == (3200, 1800)
+            assert manager.pool.live.bytes < 64 * 1024**2
+            assert drawing.fog[0] > 0
+        cuemol_style("reset", quiet=1, _self=cmd)
+        cmd.set("orthoscopic", 1)
+        widget.setFixedSize(round(320 / ratio), round(240 / ratio))
+        pump()
+        with widget:
+            widget.resizeGL(widget.width(), widget.height())
         entry = cuemol_style("richardson", quiet=1, _self=cmd)
         pump()
         live_errors = []
@@ -308,6 +329,7 @@ def check(output):
         "tile_mean_error_255": error,
         "live_tile_mean_errors_255": live_errors,
         "live_pencil_native_mean_error_255": pencil_error,
+        "large_perspective_first_draw": True,
         "transfer_state_restored": True,
         "alpha_camera_and_nonsequential_states": True,
         "failed_export_preserved_file": True,
