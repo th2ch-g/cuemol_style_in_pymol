@@ -181,6 +181,14 @@ expensive to prepare. `cuemol_style list` reports preparation time and
 mesh/native CGO storage for each active view. Retaining ray geometry for all
 states increases preparation time, memory use, and saved session size.
 
+Interactive contours prepare conservative triangle-batch bounds with the meshes
+and project those bounds into a coarse coverage grid for each view. Empty tiles
+and empty parts of the composite pass are skipped without reducing the 3x
+sampling rate. These bounds count toward `cache_mb`. Pencil strokes also skip
+samples outside their maximum possible reach, retaining the reference values.
+The regression harness compares culling on/off pixel-for-pixel across sparse
+atoms, rotations, and orthographic/perspective views.
+
 The interactive framebuffer uses 24 bytes per supersample in a reusable 3x
 tile: about 54.4 MiB for a 510-pixel tile with a two-pixel overlap. Wider outlines
 increase the overlap; allocations are capped at 256 MiB and the driver's texture

@@ -83,6 +83,49 @@ def check_live_pencil(cmd, widget, pump):
     return error
 
 
+def check_live_culling(cmd, widget, pump, output):
+    """Tiny disconnected atoms and changing cameras must survive empty-space culling."""
+    cmd.delete("all")
+    cmd.frame(1)
+    for index in range(21):
+        cmd.pseudoatom(
+            "sparse",
+            elem="C",
+            pos=[(index % 7 - 3) * 3, (index // 7 - 1) * 4, index % 3 - 1],
+            vdw=0.04 if index % 2 else 0.6,
+        )
+    cmd.color("salmon", "sparse")
+    cmd.orient()
+    cmd.zoom(buffer=2)
+    cmd.bg_color("white")
+    manager = manager_for(cmd)
+    for style in ("toon1", "richardson", "silhouette"):
+        entry = cuemol_style(
+            style, representation="cpk", quality="low", quiet=1, _self=cmd
+        )
+        for orthoscopic in (0, 1):
+            cmd.set("orthoscopic", orthoscopic)
+            for angle in (0, 43, 87):
+                cmd.turn("y", angle)
+                manager.prepare_view()
+                frames = []
+                for enabled in (False, True):
+                    with patch.object(manager.pool.live, "cull_empty", enabled):
+                        cmd.turn("y", 0)
+                        with widget:
+                            widget.paintGL()
+                        path = (
+                            output
+                            / f"sparse-{style}-{orthoscopic}-{angle}-{enabled}.png"
+                        )
+                        assert widget.grabFramebuffer().save(str(path))
+                        frames.append(pixels(path.read_bytes()))
+                np.testing.assert_array_equal(*frames)
+                assert not entry.drawings["sparse"][0].error
+                cmd.turn("y", -angle)
+        cuemol_style("reset", quiet=1, _self=cmd)
+
+
 def check(output):
     from OpenGL import GL as gl
     from pymol import CmdException
@@ -138,17 +181,21 @@ def check(output):
         for orthoscopic in (0, 1):
             cmd.set("orthoscopic", orthoscopic)
             images = []
-            for tile in (510, 96):
-                with patch.object(manager.pool.live, "tile_size", tile):
+            for tile, culling in ((510, True), (96, True), (510, False)):
+                with (
+                    patch.object(manager.pool.live, "tile_size", tile),
+                    patch.object(manager.pool.live, "cull_empty", culling),
+                ):
                     cmd.turn("y", 0)
                     with widget:
                         widget.paintGL()
-                    image_path = output / f"live-{orthoscopic}-{tile}.png"
+                    image_path = output / f"live-{orthoscopic}-{tile}-{culling}.png"
                     assert widget.grabFramebuffer().save(str(image_path))
                     images.append(pixels(image_path.read_bytes()).astype(float))
             live_error = float(np.abs(images[0] - images[1]).mean())
             assert live_error < 0.1, live_error
             live_errors.append(live_error)
+            np.testing.assert_array_equal(images[0], images[2])
         for name, tile in (("single", 510), ("tiled", 96)):
             with patch.object(manager.pool.hatch, "tile_size", tile):
                 cuemol_style(
@@ -324,12 +371,14 @@ def check(output):
             )
             assert not next(manager.active_drawings()).error
         cuemol_style("reset", quiet=1, _self=cmd)
+        check_live_culling(cmd, widget, pump, output)
         pencil_error = check_live_pencil(cmd, widget, pump)
     report = {
         "tile_mean_error_255": error,
         "live_tile_mean_errors_255": live_errors,
         "live_pencil_native_mean_error_255": pencil_error,
         "large_perspective_first_draw": True,
+        "sparse_culling_identical_views": 18,
         "transfer_state_restored": True,
         "alpha_camera_and_nonsequential_states": True,
         "failed_export_preserved_file": True,

@@ -25,7 +25,9 @@ class Entry:
     @property
     def nbytes(self):
         return sum(
-            p.mesh.nbytes for ds in self.drawings.values() for d in ds for p in d.pieces
+            sum(p.mesh.nbytes for p in d.pieces) + d.bounds.nbytes
+            for ds in self.drawings.values()
+            for d in ds
         )
 
     @property
@@ -220,6 +222,11 @@ class Manager:
                                 ),
                             )
                         )
+                        cache_size += drawings[obj][-1].bounds.nbytes
+                        if cache_size > budget:
+                            raise ValueError(
+                                "Prepared geometry exceeds cache_mb; lower quality or increase cache_mb"
+                            )
                 if (
                     not any(d.pieces for ds in drawings.values() for d in ds)
                     and transparency != 1

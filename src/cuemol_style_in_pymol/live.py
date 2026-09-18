@@ -5,9 +5,31 @@ from ctypes import c_void_p
 import numpy as np
 
 
+def bounds(pieces):
+    """Prepare conservative boxes for small, contiguous triangle batches."""
+    boxes = []
+    corners = np.array(
+        [[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)], np.float32
+    )
+    for piece in pieces:
+        mesh = piece.mesh
+        if mesh.opacity < 0.999999 or not len(mesh.faces):
+            continue
+        triangles = mesh.vertices[mesh.faces]
+        starts = np.arange(0, len(triangles), 64)
+        low = np.minimum.reduceat(triangles.min(axis=1), starts)
+        high = np.maximum.reduceat(triangles.max(axis=1), starts)
+        batch = np.ones((len(starts), 8, 4), np.float32)
+        batch[:, :, :3] = np.where(corners, high[:, None, :], low[:, None, :])
+        boxes.append(batch)
+    return np.concatenate(boxes) if boxes else np.empty((0, 8, 4), np.float32)
+
+
 class LivePass:
     tile_size = 510
     scale = 3
+    cull_empty = True
+    cell_size = 32
 
     def __init__(self):
         self.framebuffer = 0
@@ -115,6 +137,9 @@ class LivePass:
         if abs(projection[3, 3]) < 0.5:
             world_per_pixel *= max(drawing.fog[0], 1e-6)
         pad = max(2, int(np.ceil(drawing.profile.edge_width / world_per_pixel)) + 1)
+        cells = self.coverage(
+            drawing.bounds, projection @ modelview, width, height, pad
+        )
         tile = self.tile_size
         tw, th = min(width, tile + 2 * pad), min(height, tile + 2 * pad)
         mode = int(gl.glGetIntegerv(gl.GL_MATRIX_MODE))
@@ -125,6 +150,14 @@ class LivePass:
         try:
             for y in range(0, height, tile):
                 for x in range(0, width, tile):
+                    visible = cells[
+                        (cells[:, 0] < x + tile)
+                        & (cells[:, 1] < y + tile)
+                        & (cells[:, 0] + self.cell_size > x)
+                        & (cells[:, 1] + self.cell_size > y)
+                    ]
+                    if not len(visible):
+                        continue
                     left = min(max(0, x - pad), width - tw)
                     bottom = min(max(0, y - pad), height - th)
                     crop = np.eye(4)
@@ -141,6 +174,7 @@ class LivePass:
                         (left, bottom),
                         (width, height),
                         (vx + x, vy + y, min(tile, width - x), min(tile, height - y)),
+                        visible,
                     )
         finally:
             gl.glMatrixMode(gl.GL_PROJECTION)
@@ -151,7 +185,31 @@ class LivePass:
             if not scissor_enabled:
                 gl.glDisable(gl.GL_SCISSOR_TEST)
 
-    def draw_tile(self, pool, drawing, projection, viewport, offset, total, scissor):
+    def coverage(self, boxes, matrix, width, height, pad):
+        cell = self.cell_size
+        nx, ny = (width + cell - 1) // cell, (height + cell - 1) // cell
+        if not self.cull_empty:
+            mask = np.ones((ny, nx), bool)
+        else:
+            clip = boxes @ matrix.T
+            crossing = np.any(clip[:, :, 3] <= 0, axis=1)
+            ndc = clip[:, :, :2] / np.maximum(clip[:, :, 3:], 1e-12)
+            xy = (ndc + 1) * np.array([width, height]) / 2
+            low, high = xy.min(axis=1) - pad, xy.max(axis=1) + pad
+            low[crossing], high[crossing] = [0, 0], [width, height]
+            lo = np.floor(np.clip(low / cell, [0, 0], [nx, ny])).astype(int)
+            hi = np.ceil(np.clip(high / cell, [0, 0], [nx, ny])).astype(int)
+            counts = np.zeros((ny + 1, nx + 1), np.int32)
+            np.add.at(counts, (lo[:, 1], lo[:, 0]), 1)
+            np.add.at(counts, (hi[:, 1], hi[:, 0]), 1)
+            np.add.at(counts, (lo[:, 1], hi[:, 0]), -1)
+            np.add.at(counts, (hi[:, 1], lo[:, 0]), -1)
+            mask = counts.cumsum(axis=0).cumsum(axis=1)[:-1, :-1] > 0
+        return np.argwhere(mask)[:, ::-1] * cell
+
+    def draw_tile(
+        self, pool, drawing, projection, viewport, offset, total, scissor, cells
+    ):
         from OpenGL import GL as gl
         from OpenGL.GL.EXT import framebuffer_object as fb
 
@@ -233,15 +291,13 @@ class LivePass:
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
             gl.glDisableClientState(gl.GL_NORMAL_ARRAY)
             gl.glDisableClientState(gl.GL_COLOR_ARRAY)
-            gl.glVertexPointer(
-                2,
-                gl.GL_FLOAT,
-                0,
-                np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], np.float32),
-            )
+            corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1]]) * self.cell_size
+            quads = cells[:, None, :] + corners - np.array(offset)
+            quads = np.asarray(quads * 2 / np.array(viewport[2:]) - 1, np.float32)
+            gl.glVertexPointer(2, gl.GL_FLOAT, 0, quads)
             gl.glEnable(gl.GL_BLEND)
             gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
-            gl.glDrawArrays(gl.GL_QUADS, 0, 4)
+            gl.glDrawArrays(gl.GL_QUADS, 0, len(quads) * 4)
             gl.glDisable(gl.GL_BLEND)
             gl.glEnableClientState(gl.GL_NORMAL_ARRAY)
             gl.glEnableClientState(gl.GL_COLOR_ARRAY)

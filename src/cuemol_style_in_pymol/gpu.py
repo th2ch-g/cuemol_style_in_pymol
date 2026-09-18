@@ -42,6 +42,13 @@ class Drawing:
     extent: object = field(default_factory=lambda: [[0, 0, 0], [0, 0, 0]])
 
     def __post_init__(self):
+        from .live import bounds
+
+        self.bounds = (
+            bounds(self.pieces)
+            if self.profile.edges != "none" or self.profile.material == "richardson"
+            else np.empty((0, 8, 4), np.float32)
+        )
         arrays = [p.mesh.vertices for p in self.pieces if len(p.mesh.vertices)]
         if arrays:
             self.extent = [

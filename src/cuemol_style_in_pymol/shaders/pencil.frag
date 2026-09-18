@@ -53,12 +53,17 @@ float pencilLayer(vec2 xy, vec2 direction, float tone, float threshold, float la
         float phase = phased - float(stroke) * 165.0;
         float extent = clamp(150.0 * (1.0 + 0.5 * (random01(pencilKey(layer, row, stroke, 9)) - 0.5)), 2.0, 165.0);
         if (phase >= extent) continue;
+        // Reject strokes that cannot reach this sample, even at maximum drift.
+        float maximumRadius = radius * 1.27 + 0.55;
+        if (abs(across - center) > maximumRadius + 0.0874886635 * abs(phase - extent / 2.0)) continue;
         float pressure = 1.0 - 0.45 * random01(pencilKey(layer, row, stroke, 10));
         radius *= pressure;
         float strokeCenter = along + (float(stroke) + 0.5) * 165.0 - phased;
         float drift = pencilNoise2(pencilKey(layer, 0, 0, 12), vec2(float(row) * 2.0, strokeCenter) / 375.0);
         float angle = clamp(1.2 * drift + 0.45 * randomSigned(pencilKey(layer, row, stroke, 11)), -1.0, 1.0);
         center += 0.0874886635 * angle * (phase - extent / 2.0);
+        float distance = abs(across - center);
+        if (distance > radius * 1.27 + 0.55) continue;
         unsigned int taper = pencilKey(layer, row, stroke, 13);
         float entry = clamp(0.35 * (0.35 + 0.35 * random01(taper)), 0.02, 0.45);
         float release = clamp(0.35 * (0.9 + 1.1 * random01(hashMix(taper))), 0.05, 0.60);
@@ -67,7 +72,6 @@ float pencilLayer(vec2 xy, vec2 direction, float tone, float threshold, float la
         float tail = clamp((1.0 - phase / extent) / release, 0.0, 1.0);
         radius *= head * (2.0 - head) * tail * (2.0 - tail);
         radius *= 1.0 + 0.27 * pencilNoise(pencilKey(layer, row, stroke, 14), phase / max(8.0, extent * 0.4));
-        float distance = abs(across - center);
         float fraction = clamp((min(distance + 0.55, radius) - max(distance - 0.55, -radius)) / 1.1, 0.0, 1.0);
         result = max(result, fraction * (0.6 + 0.4 * pressure));
     }
