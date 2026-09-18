@@ -427,13 +427,11 @@ class HatchPass:
             ):
                 gl.glActiveTexture(gl.GL_TEXTURE0 + unit)
                 gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
-                gl.glUniform1i(gl.glGetUniformLocation(program, name), unit)
-            gl.glUniform2f(gl.glGetUniformLocation(program, "imageSize"), width, height)
-            gl.glUniform1i(
-                gl.glGetUniformLocation(program, "samples"), pool.raster_scale
-            )
+                gl.glUniform1i(pool.uniform(program, name), unit)
+            gl.glUniform2f(pool.uniform(program, "imageSize"), width, height)
+            gl.glUniform1i(pool.uniform(program, "samples"), pool.raster_scale)
             gl.glUniform2f(
-                gl.glGetUniformLocation(program, "viewportOrigin"),
+                pool.uniform(program, "viewportOrigin"),
                 float(viewport[0]),
                 float(viewport[1]),
             )

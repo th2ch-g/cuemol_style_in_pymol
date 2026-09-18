@@ -13,7 +13,7 @@ from cuemol_style_in_pymol import cuemol_style, geometry
 from cuemol_style_in_pymol.presets import PROFILES, resolve
 from cuemol_style_in_pymol.source import read
 
-REFERENCE_REVISION = "3173d8af62e211dd37b943ee53b3d6a632e6b5d7"
+REFERENCE_REVISION = "af9509eb381c7b8aa3663475fd07a43f42bf08c4"
 
 
 def secondary_records(atoms):
@@ -186,6 +186,7 @@ def main():
             renderer, styles = reference_style(profile, representation)
             manifest = {
                 "reference_revision": REFERENCE_REVISION,
+                "native_colors": True,
                 "structure": pdb_name,
                 "output": f"{name}-cuemol.png",
                 "renderer": renderer,

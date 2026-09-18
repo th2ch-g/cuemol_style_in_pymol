@@ -61,12 +61,26 @@ for (const [kind, code] of [['helix', 'H'], ['sheet', 'S']]) {
 }
 invoke(molecule, 'fireAtomsMoved');
 const paint = core.createObj('PaintColoring');
-for (const [rgb, ids] of colors)
-  invoke(paint, 'append', selection(`aid ${ids.join(',')}`), color(JSON.parse(rgb)));
+if (manifest.native_colors) {
+  // CueMol GUI's initial molecular paint, independently of the plugin colors.
+  const styleManager = core.getService('StyleManager');
+  for (const [sel, name] of [['sheet', 'SteelBlue'], ['helix', 'khaki'],
+                             ['nucleic', 'yellow'], ['*', 'FloralWhite']])
+    invoke(paint, 'append', selection(sel), invoke(styleManager, 'compileColor', name, scene.getProp('uid')));
+} else {
+  for (const [rgb, ids] of colors)
+    invoke(paint, 'append', selection(`aid ${ids.join(',')}`), color(JSON.parse(rgb)));
+}
 molecule.setProp('coloring', paint);
 const renderer = invoke(molecule, 'createRenderer', manifest.renderer);
-if (manifest.styles) invoke(renderer, 'applyStyles', manifest.styles);
-renderer.setProp('coloring', paint);
+if (manifest.native_colors) {
+  const coloringStyle = ['ribbon', 'cartoon', 'tube', 'nucl'].includes(manifest.renderer)
+    ? 'DefaultHSCPaint' : 'DefaultCPKColoring';
+  invoke(renderer, 'applyStyles', [manifest.styles, coloringStyle].filter(Boolean).join(','));
+} else {
+  if (manifest.styles) invoke(renderer, 'applyStyles', manifest.styles);
+  renderer.setProp('coloring', paint);
+}
 for (const [key, value] of Object.entries(manifest.properties || {})) renderer.setProp(key, value);
 scene.setProp('bgcolor', color(manifest.background));
 const camera = core.createObj('Camera');

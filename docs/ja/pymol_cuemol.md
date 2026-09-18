@@ -141,9 +141,9 @@ cuemol_style ray, filename=figure_ray.png, width=640, height=480
 | `cartoon`, `round_cartoon` | 前後の残基を含む曲率罰則付き自然スプライン。ヘリックスrho 3.0、半径は平均軸距離+0.2 A。シート半幅/半厚1.4/0.2 A、rho 3.0/1.0、向きのrho 5.0。コイル半径0.2 A、rho -1/-2、重み付き端点とシート端微分の拘束。 |
 | `tube`, `nucleic` | Tube半径0.35 A。核酸はP原子を基準点とする半軸1.25/0.5 Aの主鎖、半径0.5 Aの塩基対ロッド。スプライン端面は5段の半球。面内の互換水素結合から対を推定。 |
 | `ballstick`, `sticks`, `cpk` | 球棒半径0.3/0.2 A、sticksは0.2/0.2 A。CPKのH/C/N/O/S/P半径は1.2/1.7/1.55/1.52/1.8/1.8 A、その他1.7 A。結合の中点で色を切り替え、密なメッシュで解析的な球・円柱を近似。 |
-| `surface` | 独立したEDTSurf、プローブ1.4 A、参照半径、voxelの原子対応、距離変換、marching cubes、1回の平滑化と参照法線。low/medium/highのdetailは3/6/10。 |
+| `surface` | 現行CueMolの距離場SES。プローブ1.4 A、参照半径、原子球のSASとプローブ球の2段階contour、外向き勾配法線、内側成分の選別。low/medium/highのdetailは3/6/10、格子間隔は `1.43 / (1 + 0.2 * (detail - 1))` A。 |
 
-EDTSurfでは未初期化の平滑化フラグと、リンを除外していた半径番号の不整合を修正しています。[由来と利用許諾](../../native/edtsurf/README.md) を同梱しています。実行時のCueMol依存はありません。ソースからのビルドにはC++17コンパイラとpybind11が必要で、wheelには拡張を含めます。
+表面は既定アルゴリズムがdistfieldとなったCueMol `af9509e` を対象に更新しました。格子・出力メモリを制限し、球の近傍だけを計算して改善しない距離の平方根を省きます。6400万格子点またはworkspace上限を超えた場合だけ格子間隔を広げます。旧EDTSurfは内部に残し、marching-cubes表の利用許諾を保持しています。[由来と利用許諾](../../native/edtsurf/README.md) を同梱しています。実行時のCueMol依存はありません。ソースからのビルドにはC++17コンパイラとpybind11が必要で、wheelには拡張を含めます。
 
 リボン接続部は残基ごとのパラメータ表、断面変化の解析的な微分、平らな矢印の肩、固定断面、参照の端面形状を使います。メッシュ分割、鎖切断・altlocの選択、修飾塩基トポロジーには差が残ります。リボン接続面は共通化し、cartoonはRibbon2Rendererと同様に要素ごとに軸を求め、ヘリックス直前でもシート先端を細く保ちます。マップとラベルは標準表示のまま、元の原子・色・結合・二次構造を維持します。
 
@@ -187,24 +187,21 @@ uv run --no-project --python .pixi/envs/default/bin/python python tests/audit_ap
 uv run --no-project --python .pixi/envs/default/bin/python python tests/compare_appearance.py .cache/appearance
 ```
 
-全26プロファイルと明示的sticksの計8形状で、座標、原子色、二次構造、平行/透視投影カメラ、画像寸法、renderer設定をそろえます。Richardsonは両側とも不透明の紙色背景、それ以外は白背景です。プラグイン自体は背景を変更しません。`--angle`、`--zoom`、`--perspective`、`--transparency`、`--live`、`--ray` で条件を変えられます。`--live` は専用の精密出力の代わりに対話表示を取得します。実行版・モジュールのdigest・manifest・ログ・画像・数値差・比較一覧をignore対象の出力先へ保存します。前景IoUは陰影も含む指標で、純粋な形状精度ではありません。画像の位置合わせ処理は行いません。
+本家側の色はプラグインのRGB配列で上書きせず、GUIの初期paintingとDefaultHSCPaint/DefaultCPKColoringから取得します。全26プロファイルと明示的sticksの計8形状で、座標、二次構造、平行/透視投影カメラ、画像寸法、renderer設定をそろえます。Richardsonは両側とも不透明の紙色背景、それ以外は白背景です。プラグイン自体は背景を変更しません。`--angle`、`--zoom`、`--perspective`、`--transparency`、`--live`、`--ray` で条件を変えられます。`--live` は専用の精密出力の代わりに対話表示を取得します。実行版・モジュールのdigest・manifest・ログ・画像・数値差・比較一覧をignore対象の出力先へ保存します。前景IoUは陰影も含む指標で、純粋な形状精度ではありません。画像の位置合わせ処理は行いません。
 
-画像比較にはCueMol 2.3.13.523（`aeacb41`）と上記の定義を使いました。このbuildから `3173d8a` までの対象rendererの変更は選択用IDの追加で、今回使うdirect exporter、材質表、EDTSurf、形状寸法、スプライン計算は同じです。実行モジュールのdigestと参照ソースのrevisionは区別して保存します。
+以下の旧版での精密出力比較にはCueMol 2.3.13.523（`aeacb41`）と上記の定義を使いました。このbuildから `3173d8a` までの対象rendererの変更は選択用IDの追加で、今回使うdirect exporter、材質表、EDTSurf、形状寸法、スプライン計算は同じです。実行モジュールのdigestと参照ソースのrevisionは区別して保存します。
 
 代表的な実測値は次のとおりです。MAEは両画像の前景領域の和集合におけるRGB各色の平均絶対差（0〜255）、平滑化MAEは2ピクセルのGaussianを適用した値です。CueMol、GPU PNG、専用rayとも3倍サンプリングです。タンパク質は1CRN・mediumで、カメラ・色・二次構造をそろえています。
 
 | 出力・条件 | プロファイル | 前景IoU | MAE | 平滑化MAE |
 | --- | --- | ---: | ---: | ---: |
-| GPU・不透明・640×480 | `surface` | 1.0000 | 0.06 | 0.04 |
 | GPU・不透明・640×480 | `cartoon` | 0.9987 | 0.56 | 0.30 |
 | GPU・不透明・640×480 | `default` | 0.9998 | 0.25 | 0.16 |
 | GPU・不透明・640×480 | `richardson` | 0.9967 | 0.72 | 0.18 |
 | GPU・透視投影・回転-45度・zoom .8・640×480 | `richardson` | 0.9893 | 3.28 | 0.51 |
-| GPU・透明度.25・320×240 | `surface` | 0.9986 | 0.37 | 0.22 |
 | GPU・透明度.25・320×240 | `richardson` | 0.9889 | 2.29 | 0.41 |
 | GPU・透明度.65・回転37度・zoom 1.2・320×240 | `richardson` | 0.9918 | 1.30 | 0.33 |
 | 専用ray・不透明・320×240 | `default` | 0.9963 | 0.72 | 0.47 |
-| 専用ray・不透明・320×240 | `surface` | 0.9985 | 0.46 | 0.41 |
 | 専用ray・不透明・320×240 | `richardson` | 0.9898 | 2.47 | 0.52 |
 | 専用ray・透明度.4・320×240 | `richardson` | 0.9913 | 2.18 | 0.42 |
 | 専用ray・透視投影・回転-45度・zoom .8・320×240 | `richardson` | 0.9875 | 4.19 | 0.99 |
@@ -239,3 +236,11 @@ uv run --no-project --python .pixi/envs/default/bin/python python tests/check_cu
 ```
 
 `--benchmark-style toon1` や `ribbon` でも同じデータを測定できます。レポートには準備時間、最大RSS、メッシュ・標準CGO・GPUの保存量、実際の回転・再生速度を記録します。性能はOpenGLドライバと画面内の形状面積に依存します。環境固有の結果は `.cache/` に保存します。
+
+NumPy 2.5.3の検証では、この条件のRichardsonは準備30.24秒、回転190.9 FPS、state切替144.9 states/s、動画再生29.3 states/sでした。メッシュ・標準CGO・GPUの保存量は491.6/1469.9/252.0 MiB、対話framebufferは54.4 MiBです。このベンチマークを含むGUI検証全体の最大RSSは6063.8 MiBで、100 stateの事前読み込みには依然大きなメモリが必要です。
+
+NumPy 2.5.3で全26プロファイルとsticksを本家CueMol 2.3.15.530（af9509e）の既定色と再比較しました。surfaceの前景IoUは0.8304から0.9919、RGB平均差は60.55から1.13/255へ改善しています。1CRN・mediumの形状生成は約12 ms（旧EDTSurfは約10 ms）で、現行方式に合わせた2段階contourを使います。
+
+metallic_chrome/copperはUmbreonの本家設定と分子色を保持し、粗さは0.05/0.15です。このbackendのcopperは自動的に橙色になりません。対話表示のRGB平均差は0.82/0.85、条件をそろえた精密PNGでは0.030/0.031です。旧POV-Ray材質とは定義が異なります。
+
+OpenGLの整数uniformへPython整数を渡し、NumPy 2.5.3のnumpy.boolエラーを修正しました。クリック判定もpixel中心と3倍描画の深度範囲に合わせ、見えている面の選択と管理外の前景による遮蔽を両立しています。uniform位置はGL contextごとにcacheし、resetやcontext交換で破棄します。1GGG・3200×1800ではtoon1約32 FPS、Richardson約18 FPS、輪郭framebuffer 54.8 MiBです。この大きな画面のRichardsonは30 FPS未満ですが、鉛筆描画の3倍品質は保持しています。

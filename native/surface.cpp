@@ -15,6 +15,7 @@ namespace py = pybind11;
 void bind_pencil(py::module_ &module);
 void bind_visibility(py::module_ &module);
 void bind_contours(py::module_ &module);
+void bind_distance_surface(py::module_ &module);
 
 static py::tuple surface(
     py::array_t<float, py::array::c_style | py::array::forcecast> positions,
@@ -92,6 +93,7 @@ PYBIND11_MODULE(_edtsurf, module)
     bind_pencil(module);
     bind_visibility(module);
     bind_contours(module);
+    bind_distance_surface(module);
     module.def("surface", &surface, py::arg("positions"), py::arg("elements"),
                py::arg("detail") = 6, py::arg("probe") = 1.4,
                py::arg("max_bytes") = std::size_t(2048) * 1024 * 1024);

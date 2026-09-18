@@ -9,6 +9,7 @@ setup(
             "cuemol_style_in_pymol._edtsurf",
             [
                 "native/surface.cpp",
+                "native/distance_surface.cpp",
                 "native/pencil.cpp",
                 "native/visibility.cpp",
                 "native/contours.cpp",

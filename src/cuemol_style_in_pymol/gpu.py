@@ -87,6 +87,7 @@ class Pool:
         self.budget = int(budget_mb * 1024**2)
         self.buffers = OrderedDict()
         self.programs = {}
+        self.uniforms = {}
         self.context = None
         self.bytes = 0
         self.show_selection = True
@@ -115,6 +116,7 @@ class Pool:
             self.live.__init__()
         self.buffers.clear()
         self.programs.clear()
+        self.uniforms.clear()
         self.bytes = 0
         self.context = current
 
@@ -148,6 +150,14 @@ class Pool:
                 validate=False,
             )
         return self.programs[name]
+
+    def uniform(self, program, name):
+        key = program, name
+        if key not in self.uniforms:
+            from OpenGL import GL as gl
+
+            self.uniforms[key] = int(gl.glGetUniformLocation(program, name))
+        return self.uniforms[key]
 
     def buffer(self, piece):
         from OpenGL import GL as gl
@@ -188,17 +198,15 @@ class Pool:
         program = self.program("body")
         gl.glUseProgram(program)
         physical = PBR_MATERIALS.get(drawing.profile.material)
-        gl.glUniform1i(
-            gl.glGetUniformLocation(program, "principled"), physical is not None
-        )
+        gl.glUniform1i(self.uniform(program, "principled"), physical is not None)
         if physical is not None:
-            gl.glUniform4f(gl.glGetUniformLocation(program, "pbr"), *physical[2:])
+            gl.glUniform4f(self.uniform(program, "pbr"), *physical[2:])
         gl.glUniform1i(
-            gl.glGetUniformLocation(program, "material"),
+            self.uniform(program, "material"),
             material_id(drawing.profile.material),
         )
         gl.glUniform4f(
-            gl.glGetUniformLocation(program, "materialLighting"),
+            self.uniform(program, "materialLighting"),
             *(
                 physical[:2] + (0.0, 0.0)
                 if physical
@@ -206,19 +214,17 @@ class Pool:
             ),
         )
         gl.glUniform4f(
-            gl.glGetUniformLocation(program, "materialFinish"),
+            self.uniform(program, "materialFinish"),
             *finish(drawing.profile.material)[4:8],
         )
         gl.glUniform1i(
-            gl.glGetUniformLocation(program, "perspective"),
+            self.uniform(program, "perspective"),
             int(abs(projection[3, 3]) < 0.5),
         )
-        gl.glUniform3f(
-            gl.glGetUniformLocation(program, "background"), *drawing.background
-        )
-        gl.glUniform2f(gl.glGetUniformLocation(program, "fogRange"), *drawing.fog)
+        gl.glUniform3f(self.uniform(program, "background"), *drawing.background)
+        gl.glUniform2f(self.uniform(program, "fogRange"), *drawing.fog)
         gl.glUniform1i(
-            gl.glGetUniformLocation(program, "pencilPreview"),
+            self.uniform(program, "pencilPreview"),
             drawing.profile.material == "richardson",
         )
         return program
@@ -276,11 +282,11 @@ class Pool:
                 program = self.program("body")
                 gl.glUseProgram(program)
                 gl.glUniform1i(
-                    gl.glGetUniformLocation(program, "material"),
+                    self.uniform(program, "material"),
                     -1,
                 )
                 gl.glUniform4f(
-                    gl.glGetUniformLocation(program, "materialLighting"),
+                    self.uniform(program, "materialLighting"),
                     *material_coefficients("nolighting"),
                 )
                 gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)

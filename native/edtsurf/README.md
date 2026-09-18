@@ -15,3 +15,7 @@ orientation flag is initialized to false: the reference SES path otherwise
 reads uninitialized memory. The wrapper includes every supplied element; the
 original hydrogen exclusion assumes EDTSurf's element numbering and incorrectly
 excludes phosphorus with CueMol's radius table. Voxel ownership is retained.
+
+The standard marching-cubes triangle table is also exposed to the independently
+implemented distance-field surface helper in `native/distance_surface.cpp`.
+The current public surface preset uses that helper; EDTSurf remains internal.

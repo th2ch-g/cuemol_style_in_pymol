@@ -2763,6 +2763,12 @@ void ProteinSurface::marchingcubeinit(int stype)
 
 }
 //half accuracy
+// Share the existing permissively licensed marching-cubes lookup data.
+const char *surface_triangles(int flags)
+{
+  return a2iTriangleConnectionTable[flags];
+}
+
 void ProteinSurface::marchingcubeorigin(int stype)
 {
   int i,j,k;

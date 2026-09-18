@@ -111,10 +111,8 @@ class LivePass:
         from OpenGL import GL as gl
 
         program = pool.body_program(drawing, projection)
-        gl.glUniform4f(
-            gl.glGetUniformLocation(program, "liveViewport"), *map(float, viewport)
-        )
-        gl.glUniform1f(gl.glGetUniformLocation(program, "liveScale"), scale)
+        gl.glUniform4f(pool.uniform(program, "liveViewport"), *map(float, viewport))
+        gl.glUniform1f(pool.uniform(program, "liveScale"), scale)
         for piece in drawing.pieces:
             if piece.mesh.opacity < 0.999999:
                 continue
@@ -255,38 +253,34 @@ class LivePass:
             ):
                 gl.glActiveTexture(gl.GL_TEXTURE0 + slot)
                 gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
-                gl.glUniform1i(gl.glGetUniformLocation(program, name), slot)
-            gl.glUniform2f(gl.glGetUniformLocation(program, "imageSize"), width, height)
-            gl.glUniform1f(gl.glGetUniformLocation(program, "sampleScale"), self.scale)
+                gl.glUniform1i(pool.uniform(program, name), slot)
+            gl.glUniform2f(pool.uniform(program, "imageSize"), width, height)
+            gl.glUniform1f(pool.uniform(program, "sampleScale"), self.scale)
             gl.glUniform1i(
-                gl.glGetUniformLocation(program, "drawEdges"),
+                pool.uniform(program, "drawEdges"),
                 drawing.profile.edges != "none",
             )
             gl.glUniform2f(
-                gl.glGetUniformLocation(program, "viewportOrigin"),
+                pool.uniform(program, "viewportOrigin"),
                 *map(float, viewport[:2]),
             )
             gl.glUniformMatrix4fv(
-                gl.glGetUniformLocation(program, "projection"),
+                pool.uniform(program, "projection"),
                 1,
                 True,
                 projection.astype(np.float32),
             )
             gl.glUniform1i(
-                gl.glGetUniformLocation(program, "outerOnly"),
+                pool.uniform(program, "outerOnly"),
                 drawing.profile.edges == "silhouette",
             )
             gl.glUniform1f(
-                gl.glGetUniformLocation(program, "edgeWidth"),
+                pool.uniform(program, "edgeWidth"),
                 drawing.profile.edge_width,
             )
-            gl.glUniform3f(
-                gl.glGetUniformLocation(program, "edgeColor"), *drawing.edge_color
-            )
-            gl.glUniform3f(
-                gl.glGetUniformLocation(program, "background"), *drawing.background
-            )
-            gl.glUniform2f(gl.glGetUniformLocation(program, "fogRange"), *drawing.fog)
+            gl.glUniform3f(pool.uniform(program, "edgeColor"), *drawing.edge_color)
+            gl.glUniform3f(pool.uniform(program, "background"), *drawing.background)
+            gl.glUniform2f(pool.uniform(program, "fogRange"), *drawing.fog)
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
             gl.glDisableClientState(gl.GL_NORMAL_ARRAY)

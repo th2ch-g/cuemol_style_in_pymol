@@ -751,12 +751,12 @@ def nucleic_bases(atoms, coords, colors, detail):
 
 
 def surface_mesh(model, colors, coords, quality):
-    """Generate CueMol's EDTSurf solvent-excluded surface and voxel owners."""
-    from ._edtsurf import surface
+    """Generate the current CueMol distance-field SES and atom owners."""
+    from ._edtsurf import distance_surface
 
     elements = {name: i for i, name in enumerate(("H", "C", "N", "O", "S", "P"))}
     types = [elements.get(atom.symbol.upper(), 6) for atom in model.atom]
-    vertices, normals, faces, owners = surface(
+    vertices, normals, faces, owners = distance_surface(
         coords, types, {"low": 3, "medium": 6, "high": 10}[quality]
     )
     return Mesh(vertices, normals, colors[owners], faces, owners)

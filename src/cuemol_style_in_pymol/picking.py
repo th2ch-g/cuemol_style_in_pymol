@@ -129,9 +129,22 @@ def attach(manager):
 
         def hit(self, event):
             ratio = widget.devicePixelRatioF()
-            x = event.pos().x() * ratio
-            y = (widget.height() - event.pos().y()) * ratio
-            return hit_at(list(manager.active_drawings()), x, y, self.depth(x, y))
+            x = int(event.pos().x() * ratio) + 0.5
+            y = int((widget.height() - event.pos().y()) * ratio) + 0.5
+            drawings = list(manager.active_drawings())
+            depth = self.depth(x, y)
+            atom = hit_at(drawings, x, y, depth)
+            if atom is not None:
+                return atom
+            # Contour compositing retains the nearest of its nine subpixels.
+            # Test that footprint before treating the depth as a native occluder.
+            for dy in (-1 / 3, 0, 1 / 3):
+                for dx in (-1 / 3, 0, 1 / 3):
+                    if dx or dy:
+                        atom = hit_at(drawings, x + dx, y + dy, depth)
+                        if atom is not None:
+                            return atom
+            return None
 
         def pick(self, atom, additive):
             if self.closed or manager.busy:

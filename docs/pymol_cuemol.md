@@ -272,11 +272,15 @@ reference modes; pixel equality across these backends is not claimed.
 | `cartoon`, `round_cartoon` | Penalized natural splines including flanking residues. Helix rho 3.0, radius = mean pivot-axis distance + 0.2 A. Sheet half-width/thickness 1.4/0.2 A, rho 3.0/1.0, facing-vector rho 5.0. Coil radius 0.2 A, rho -1/-2, weighted anchors and sheet-end derivative support. |
 | `tube`, `nucleic` | Tube radius 0.35 A. Nucleic P-atom backbone half-axes 1.25/0.5 A, base-pair rods radius 0.5 A. Spline terminal caps use five hemispherical rings. Compatible in-plane hydrogen bonds determine base pairs. |
 | `ballstick`, `sticks`, `cpk` | Ball/stick radii 0.3/0.2 A; sticks use 0.2/0.2 A. CPK H/C/N/O/S/P radii 1.2/1.7/1.55/1.52/1.8/1.8 A, other elements 1.7 A. Bond colors split at the midpoint. Dense spheres/cylinders approximate analytic primitives. |
-| `surface` | Standalone EDTSurf, probe 1.4 A, reference radii, voxel atom ownership, distance transform, marching cubes, one smoothing pass, and reference normals. Quality low/medium/high uses detail 3/6/10. |
+| `surface` | Current CueMol distance-field SES: probe 1.4 A, reference radii, atom-sphere SAS contour followed by a probe-sphere contour, outward gradient normals and inner-component selection. Quality low/medium/high uses detail 3/6/10 with spacing `1.43 / (1 + 0.2 * (detail - 1))` A. |
 
-The EDTSurf wrapper corrects an uninitialized smoothing flag and a radius-index
-mismatch that excluded phosphorus. Its original permission notice and local
-changes are recorded in [the vendored-source notice](../native/edtsurf/README.md).
+The surface target is now [CueMol af9509e](https://github.com/CueMol/cuemol2/tree/af9509eb381c7b8aa3663475fd07a43f42bf08c4),
+whose default surface algorithm is `distfield`. The native implementation bounds
+the grid and output allocations, evaluates only sphere-local boxes, and rejects
+non-improving probe distances before square roots. Grid spacing coarsens only
+when the 64-million-cell/workspace cap is exceeded. The older EDTSurf helper is
+retained internally; its marching-cubes lookup data and permission notice are
+recorded in [the vendored-source notice](../native/edtsurf/README.md).
 CueMol and its source tree are not runtime dependencies. Building a source
 distribution requires a C++17 compiler and pybind11; wheels contain the extension.
 
@@ -366,18 +370,20 @@ uv run --no-project --python .pixi/envs/default/bin/python python tests/compare_
 ```
 
 The audit covers all 26 profiles and explicit sticks (eight geometries). It
-aligns exact coordinates, atom colors, secondary structure, orthographic or
+aligns exact coordinates, secondary structure, orthographic or
 perspective cameras, image dimensions, and renderer properties. Richardson is
 compared on the same opaque paper background in both engines; other profiles
 use white. The plugin itself never changes the user's background. Re-run with
 `--angle`, `--zoom`, `--perspective`, `--transparency`, `--live`, or `--ray`.
 `--live` captures the interactive framebuffer instead of the precision export.
+Reference colors come from the native GUI initial molecular paint and native
+DefaultHSCPaint/DefaultCPKColoring, independently of the plugin's RGB arrays.
 Runtime version,
 module digest, manifests, logs, images, numerical differences, and contact sheets
 are stored in the ignored output directory. Foreground IoU includes shading;
 it is not a pure geometric accuracy measure. No image registration is applied.
 
-The image audit used CueMol 2.3.13.523 (`aeacb41`) and the definitions above.
+The historical precision-image audit below used CueMol 2.3.13.523 (`aeacb41`) and the definitions above.
 The relevant renderer changes from that build to `3173d8a` add picking names;
 the direct exporter, material table, EDTSurf, geometry dimensions, and spline
 calculations used here are unchanged. The runtime digest is saved separately
@@ -391,16 +397,13 @@ colors, and secondary structure.
 
 | Export and condition | Profile | Foreground IoU | MAE | Blurred MAE |
 | --- | --- | ---: | ---: | ---: |
-| GPU, opaque, 640x480 | `surface` | 1.0000 | 0.06 | 0.04 |
 | GPU, opaque, 640x480 | `cartoon` | 0.9987 | 0.56 | 0.30 |
 | GPU, opaque, 640x480 | `default` | 0.9998 | 0.25 | 0.16 |
 | GPU, opaque, 640x480 | `richardson` | 0.9967 | 0.72 | 0.18 |
 | GPU, perspective, rotated -45 degrees, zoom .8, 640x480 | `richardson` | 0.9893 | 3.28 | 0.51 |
-| GPU, transparency .25, 320x240 | `surface` | 0.9986 | 0.37 | 0.22 |
 | GPU, transparency .25, 320x240 | `richardson` | 0.9889 | 2.29 | 0.41 |
 | GPU, transparency .65, rotated 37 degrees, zoom 1.2, 320x240 | `richardson` | 0.9918 | 1.30 | 0.33 |
 | Dedicated ray, opaque, 320x240 | `default` | 0.9963 | 0.72 | 0.47 |
-| Dedicated ray, opaque, 320x240 | `surface` | 0.9985 | 0.46 | 0.41 |
 | Dedicated ray, opaque, 320x240 | `richardson` | 0.9898 | 2.47 | 0.52 |
 | Dedicated ray, transparency .4, 320x240 | `richardson` | 0.9913 | 2.18 | 0.42 |
 | Dedicated ray, perspective, rotated -45 degrees, zoom .8, 320x240 | `richardson` | 0.9875 | 4.19 | 0.99 |
@@ -409,12 +412,23 @@ Contour placement and renderer-group blending use the shared screen pipeline
 described above. The table reports the measured image errors for these cameras
 and scenes; it does not establish pixel equality for arbitrary inputs.
 
-The interactive path was also compared directly with CueMol 2.3.15.530
-(`af9509e`) using the same aligned input. The live contour approximation has
+All 26 profiles plus explicit sticks were rechecked on NumPy 2.5.3 against
+CueMol 2.3.15.530 (`af9509e`), using native reference colors. The new surface
+changes foreground IoU from 0.8304 to 0.9919 and RGB MAE from 60.55 to 1.13/255.
+At medium quality, its 1CRN native mesh prepares in about 12 ms (the old EDTSurf
+mesh took about 10 ms); matching the current surface requires two contour passes.
+
+Metallic chrome/copper retain the native Umbreon parameters, including roughness
+0.05/0.15 and the molecular pigment. Copper does not force an orange base color
+in this backend. Live RGB MAE is 0.82/0.85; controlled precision PNG comparisons
+are 0.030/0.031. Legacy POV-Ray materials have different semantics.
+
+The interactive path was compared using the same aligned input. The live contour approximation has
 larger differences than precision exports, especially at occluding joins:
 
 | Live condition | Profile | Foreground IoU | MAE | Blurred MAE |
 | --- | --- | ---: | ---: | ---: |
+| Opaque, 640x480 | `surface` | 0.9919 | 1.13 | 0.41 |
 | Opaque, 640x480 | `toon1` | 0.9830 | 6.34 | 1.15 |
 | Opaque, 640x480 | `toon2` | 0.9562 | 8.16 | 2.15 |
 | Opaque, 640x480 | `richardson` | 0.9719 | 9.18 | 1.33 |
@@ -457,3 +471,19 @@ Use `--benchmark-style toon1` or `ribbon` for the same workload with other
 materials. The generated report includes preparation time, peak RSS, mesh/native
 CGO/GPU storage, and actual rotation and playback rates. Results depend on the
 OpenGL driver and scene coverage; retain machine-specific reports in `.cache/`.
+
+The NumPy 2.5.3 validation run measured Richardson preparation at 30.24 s,
+rotation at 190.9 FPS, state switching at 144.9 states/s, and movie playback at
+29.3 states/s for this workload. Mesh/native CGO/GPU storage was
+491.6/1469.9/252.0 MiB, with a 54.4 MiB live framebuffer. The complete GUI suite
+including this benchmark peaked at 6063.8 MiB RSS; preloading 100 states still
+requires substantial memory.
+
+NumPy 2.5.3 is included in the real PyMOL audit. OpenGL integer uniforms receive
+Python integers, including the projection flag that previously failed with
+`numpy.bool`. Picking samples framebuffer pixel centers and the 3x depth footprint,
+so visible surfaces are selectable while native foreground objects still occlude
+them. Uniform locations are cached per OpenGL context; reset/context replacement
+clears that cache. At 3200 x 1800 on the measured 1GGG scene, toon1 reaches about
+32 FPS and Richardson 18 FPS with a 54.8 MiB contour framebuffer. Richardson at
+this large viewport remains below 30 FPS; the 3x pencil quality is retained.
