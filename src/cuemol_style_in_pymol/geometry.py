@@ -762,7 +762,67 @@ def surface_mesh(model, colors, coords, quality):
     return Mesh(vertices, normals, colors[owners], faces, owners)
 
 
-def build(atoms, coords, bonds, model, profile, representation, quality, color_mode):
+def native_atoms(state, representation, color_mode):
+    """Represent atomic layers with constant-size sphere/cylinder records."""
+    from .native import NativeAtoms
+
+    atoms, coords = state.atoms, state.coords
+    colors = atom_colors(atoms, color_mode, representation)
+    mask = np.array(
+        [
+            a.kind == "other"
+            if representation in ("ribbon", "cartoon", "tube", "nucleic")
+            else True
+            for a in atoms
+        ]
+    )
+    ids = np.flatnonzero(mask)
+    radius = np.array(
+        [
+            CUEMOL_RADII.get(atoms[i].element.upper(), 1.7)
+            if representation == "cpk"
+            else 0.2
+            if representation == "sticks"
+            else 0.3
+            for i in ids
+        ],
+        dtype=np.float32,
+    )
+    links = np.asarray(state.bonds, int).reshape(-1, 2)
+    if representation == "cpk":
+        links = links[:0]
+    else:
+        links = links[mask[links].all(axis=1)]
+        links = links[
+            np.linalg.norm(coords[links[:, 1]] - coords[links[:, 0]], axis=1) >= 1e-8
+        ]
+    midpoint = coords[links].mean(axis=1)
+    starts = np.stack((coords[links[:, 0]], midpoint), axis=1).reshape(-1, 3)
+    ends = np.stack((midpoint, coords[links[:, 1]]), axis=1).reshape(-1, 3)
+    owners = links.ravel().astype(np.int32)
+    return NativeAtoms(
+        atoms,
+        np.c_[coords[ids], radius].astype(np.float32),
+        colors[ids].astype(np.float32),
+        ids.astype(np.int32),
+        np.c_[starts, ends, np.full(len(owners), 0.2)].astype(np.float32),
+        colors[owners].astype(np.float32),
+        owners,
+    )
+
+
+def build(
+    atoms,
+    coords,
+    bonds,
+    model,
+    profile,
+    representation,
+    quality,
+    color_mode,
+    include_atoms=True,
+    budget_bytes=None,
+):
     colors = atom_colors(atoms, color_mode, representation)
     detail = QUALITIES[quality][1]
     if representation == "surface":
@@ -776,6 +836,25 @@ def build(atoms, coords, bonds, model, profile, representation, quality, color_m
         chosen = {i for i, a in enumerate(atoms) if a.kind == "other"}
     else:
         chosen = set(range(len(atoms)))
+    if not include_atoms:
+        return merge(parts)
+    if budget_bytes is not None and chosen:
+        vertices, faces = sphere_template(detail * 3)
+        links = (
+            0
+            if representation == "cpk"
+            else sum(i in chosen and j in chosen for i, j in bonds)
+        )
+        triangles = len(chosen) * len(faces) + links * 8 * detail * 3
+        mesh_bytes = (
+            len(chosen) * len(vertices) * 40
+            + links * (8 * detail * 3 + 4) * 40
+            + triangles * 12
+        )
+        if max(mesh_bytes, triangles * 112) > budget_bytes:
+            raise ValueError(
+                "Atomic meshes exceed cache_mb; reduce selection or quality, or use supported native atoms"
+            )
     for i in sorted(chosen):
         a = atoms[i]
         if representation == "cpk":

@@ -1,7 +1,7 @@
 """Read-only molecular snapshots and reversible representation changes."""
 
 from contextlib import contextmanager
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -39,14 +39,20 @@ class State:
     representations: np.ndarray
     transparency: dict
 
-    def subset(self, mask):
+    def subset(self, mask, *, copy_atoms=True):
         indices = np.flatnonzero(mask)
         lookup = {int(old): new for new, old in enumerate(indices)}
-        model = deepcopy(self.model)
-        model.atom = [model.atom[i] for i in indices]
-        model.bond = [b for b in model.bond if all(i in lookup for i in b.index)]
-        for b in model.bond:
-            b.index = [lookup[i] for i in b.index]
+        # Copy only retained topology; copying the full solvated system for
+        # every representation/opacity layer is needlessly expensive.
+        model = copy(self.model)
+        selected_atoms = [self.model.atom[i] for i in indices]
+        model.atom = deepcopy(selected_atoms) if copy_atoms else selected_atoms
+        model.bond = []
+        for original in self.model.bond:
+            if all(i in lookup for i in original.index):
+                bond = copy(original)
+                bond.index = [lookup[i] for i in original.index]
+                model.bond.append(bond)
         return State(
             tuple(self.atoms[i] for i in indices),
             self.coords[indices],
@@ -105,12 +111,17 @@ def read(cmd, selection, budget_bytes=None):
     properties = {(r[0], r[1]): r[2:] for r in rows}
     protein = set(cmd.index(f"({selection}) and polymer.protein"))
     nucleic = set(cmd.index(f"({selection}) and polymer.nucleic"))
-    colors = {r[3]: tuple(cmd.get_color_tuple(r[3])) for r in rows}
+    colors = {
+        index: tuple(cmd.get_color_tuple(index)) for index in {r[3] for r in rows}
+    }
+    object_keys = {obj: [] for obj in objects}
+    for key in properties:
+        object_keys[key[0]].append(key)
     result = {}
     atom_cache = {}
     estimated_bytes = 0
     for obj in objects:
-        keys = [key for key in properties if key[0] == obj]
+        keys = object_keys[obj]
         count = cmd.count_states(obj)
         estimated_bytes += len(keys) * count * 400
         if budget_bytes is not None and estimated_bytes > budget_bytes:
@@ -207,7 +218,10 @@ def layers(state, representation, transparency):
         for alpha in np.unique(np.round(opacity[mask], 6)):
             if alpha <= 0:
                 continue
-            subset = state.subset(mask & np.isclose(opacity, alpha, atol=5e-7, rtol=0))
+            selected = mask & np.isclose(opacity, alpha, atol=5e-7, rtol=0)
+            subset = (
+                state if selected.all() else state.subset(selected, copy_atoms=False)
+            )
             yield rep, subset, float(alpha)
 
 

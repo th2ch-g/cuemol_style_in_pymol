@@ -4,6 +4,28 @@
 
 `cuemol_style_in_pymol` はPyMOLに分子形状と操作中のGPU材質描画を追加する独立パッケージです。Qt版PyMOL 3.1、NumPy、SciPy、PyOpenGL、Pillow、および互換OpenGL 2.1 / GLSL 1.20コンテキストが必要です。`pixi install` でPyMOLを含む開発環境を導入できます。CueMolとmdtbxは不要です。PyMOLのソースコードと標準コマンドは変更しません。
 
+## 大規模構造
+
+既定の `atomic_mode=auto` は、2,000 原子以上のレイヤーで既定材質かつ輪郭なしの場合、球と結合を PyMOL の球・分割円柱命令で描きます。ポリマーのリボンは独自形状を使います。水・水素・脂質・イオンを含む選択原子を保持し、高速化のために原子を除外しません。元座標・色・選択・全読み込み状態・refresh・reset・標準 ray に対応します。
+
+原子部分の照明と透明度は PyMOL 標準処理になり、独自材質シェーダーやサンプリングによる色合成とは異なります。大規模系でも従来の描画を使う場合は `atomic_mode=mesh`、小規模系で軽量表示を指定する場合は `atomic_mode=native` を使います。独自材質・輪郭・表面はメッシュ処理を継続し、非対応の明示的 native 指定はエラーになります。軽量形状と CGO もキャッシュ予算に含みます。選択原子や球・結合の半径は変えません。
+
+軽量な半透明原子では、三角形への展開を避けるため PyMOL のシーン全体の設定 `transparency_mode=3` を使います。CueMol と Mol* は該当ビューの表示中、この設定を共有します。最後の軽量半透明ビューを reset すると、途中で明示的に変更していない限り以前のモードへ戻します。その間、他の半透明な標準オブジェクトにも同じ描画方式が適用されます。
+
+```text
+cuemol_style
+cuemol_style ballstick, atomic_mode=native
+cuemol_style ribbon, atomic_mode=mesh
+```
+
+読み込み・描画と準備時間を分けて計測できます。
+
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python tests/benchmark_large.py system.gro --output .cache/large-structure.json
+```
+
+原子数・状態数・準備時間・形状と CGO のサイズ・プロセス最大メモリを記録します。入力と計測結果はバージョン管理しません。
+
 ## 使い始める
 
 このリポジトリで `pixi install` を実行するか、既存のPyMOL用Python環境に `uv pip install "git+https://github.com/th2ch-g/cuemol_style_in_pymol.git"` で導入します。PyMOLのPythonコンソールで次の行を実行するか、`.pymolrc.py` に追記してコマンドを登録します。

@@ -9,6 +9,8 @@ from PIL import Image
 def can_compose(manager):
     """Keep native intersection and color conversion for mixed or gamma scenes."""
     cmd = manager.cmd
+    if any(entry.native_objects for entry in manager.entries.values()):
+        return False
     if abs(cmd.get_setting_float("gamma") - 1) > 1e-6:
         return False
     generated = {name for e in manager.entries.values() for name in e.generated}

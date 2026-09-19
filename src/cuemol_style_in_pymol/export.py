@@ -99,6 +99,7 @@ def native_cgo_bytes(drawings):
     """Estimate float32 command payloads, excluding native allocator overhead."""
     size = 0
     for drawing in drawings:
+        size += sum(part.cgo_nbytes for part in drawing.native)
         opaque = [p for p in drawing.pieces if p.mesh.opacity >= 0.999999]
         if opaque:
             size += 4 * (2 + sum(28 * len(p.mesh.faces) for p in opaque))
@@ -255,6 +256,8 @@ def render_group_passes(manager, width, height, ray, temporary, disabled, prepar
             if not any(p.mesh.opacity >= 0.999999 for d in drawings for p in d.pieces)
         }
         for name in entry.generated:
+            if name in entry.native_objects:
+                continue
             if name in enabled and (ray or name in alpha_names or name in empty_shapes):
                 disabled.append(name)
                 cmd.disable(name)

@@ -40,6 +40,7 @@ class Drawing:
     raster_draws: int = 0
     fog: tuple = (0.0, 1e10)
     extent: object = field(default_factory=lambda: [[0, 0, 0], [0, 0, 0]])
+    native: list = field(default_factory=list)
 
     def __post_init__(self):
         from .live import bounds
@@ -53,6 +54,7 @@ class Drawing:
             else np.empty((0, 8, 4), np.float32)
         )
         arrays = [p.mesh.vertices for p in self.pieces if len(p.mesh.vertices)]
+        arrays.extend(np.asarray(part.extent) for part in self.native)
         if arrays:
             self.extent = [
                 np.min([a.min(axis=0) for a in arrays], axis=0).tolist(),

@@ -23,8 +23,15 @@ def hit_at(drawings, x, y, depth=1.0):
         far = inverse @ [*ndc, 1, 1]
         origin = near[:3] / near[3]
         direction = unit(far[:3] / far[3] - origin)
-        for piece in drawing.pieces:
-            hit = ray_hits(piece.mesh, origin, direction)
+        candidates = [
+            (ray_hits(piece.mesh, origin, direction), piece.atoms)
+            for piece in drawing.pieces
+        ]
+        candidates.extend(
+            (part.hit(origin, direction), part.atoms)
+            for part in getattr(drawing, "native", ())
+        )
+        for hit, atoms in candidates:
             if hit is None:
                 continue
             distance, owner = hit
@@ -33,7 +40,7 @@ def hit_at(drawings, x, y, depth=1.0):
             z = (clip[2] / clip[3] + 1) / 2
             # Native opaque geometry must occlude custom picking as well.
             if 0 <= z <= min(1.0, depth + 2e-5):
-                hits.append((z, piece.atoms[owner]))
+                hits.append((z, atoms[owner]))
     return min(hits, key=lambda value: value[0])[1] if hits else None
 
 

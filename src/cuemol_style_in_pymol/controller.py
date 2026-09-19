@@ -8,6 +8,8 @@ import numpy as np
 
 from . import export, geometry, source
 from .gpu import Drawing, Piece, Pool
+from .native import groups as native_groups
+from .native import transparency as native_transparency
 from .presets import COLORS, QUALITIES, resolve
 
 
@@ -25,7 +27,9 @@ class Entry:
     @property
     def nbytes(self):
         return sum(
-            sum(p.mesh.nbytes for p in d.pieces) + d.bounds.nbytes
+            sum(p.mesh.nbytes for p in d.pieces)
+            + d.bounds.nbytes
+            + sum(part.nbytes for part in d.native)
             for ds in self.drawings.values()
             for d in ds
         )
@@ -33,6 +37,12 @@ class Entry:
     @property
     def cgo_nbytes(self):
         return sum(export.native_cgo_bytes(ds) for ds in self.drawings.values())
+
+    @property
+    def native_objects(self):
+        return {
+            name for name in self.generated if name.startswith(f"{self.name}_atoms_")
+        }
 
 
 class Manager:
@@ -71,6 +81,7 @@ class Manager:
             name = f"{entry.name}_shape_{obj_index}"
             body = f"{entry.name}_alpha_{obj_index}"
             proxy = f"{entry.name}_ray_{obj_index}"
+            native = native_groups(drawings, f"{entry.name}_atoms_{obj_index}")
             has_alpha = any(
                 p.mesh.opacity < 0.999999 for d in drawings for p in d.pieces
             )
@@ -82,10 +93,17 @@ class Manager:
                 targets.append(body)
             if has_opaque:
                 targets.append(proxy)
+            targets.extend(native)
             entry.generated.extend(targets)
             for state, drawing in enumerate(drawings, 1):
                 drawing.name, drawing.state = name, state
                 cmd.load_callback(drawing, name, state, 1, 0, 1, 0)
+                for target, opacity in native.items():
+                    values = []
+                    for part in drawing.native:
+                        if part.opacity == opacity:
+                            values.extend(part.cgo())
+                    cmd.load_cgo(values, target, state=state, zoom=0)
                 if has_alpha:
                     values = []
                     for piece in drawing.pieces:
@@ -106,6 +124,9 @@ class Manager:
             if has_alpha:
                 cmd.set("cgo_lighting", 0, body)
                 cmd.set("cgo_transparency", 0, body)
+            for target, opacity in native.items():
+                cmd.set("cgo_lighting", 1, target)
+                cmd.set("cgo_transparency", 1 - opacity, target)
 
     def unload_entry(self, entry):
         for name in entry.generated:
@@ -126,6 +147,7 @@ class Manager:
         edge_color,
         transparency,
         cache_mb=2048,
+        atomic_mode="auto",
     ):
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name):
             raise ValueError(
@@ -140,6 +162,17 @@ class Manager:
                 f"color must be one of {COLORS}; quality must be one of {tuple(QUALITIES)}"
             )
         profile = resolve(style, representation, edge, edge_width)
+        if atomic_mode not in ("auto", "mesh", "native"):
+            raise ValueError("atomic_mode must be auto, mesh, or native")
+        native_supported = (
+            profile.material == "default"
+            and profile.edges == "none"
+            and profile.representation != "surface"
+        )
+        if atomic_mode == "native" and not native_supported:
+            raise ValueError(
+                "Native atoms require the default material without outlines or surfaces"
+            )
         cache_mb = float(cache_mb)
         if not np.isfinite(cache_mb) or cache_mb <= 0:
             raise ValueError("cache_mb must be finite and positive")
@@ -161,6 +194,7 @@ class Manager:
             "edge_color": edge_color,
             "transparency": transparency,
             "cache_mb": cache_mb,
+            "atomic_mode": atomic_mode,
         }
         old = self.entries.get(name)
         if old is None and name in self.cmd.get_names("all"):
@@ -186,9 +220,25 @@ class Manager:
                     drawings[obj] = []
                     for frame in frames:
                         pieces = []
+                        native = []
                         for rep, subset, opacity in source.layers(
                             frame, profile.representation, transparency
                         ):
+                            compact = (
+                                native_supported
+                                and rep != "surface"
+                                and (
+                                    atomic_mode == "native"
+                                    or atomic_mode == "auto"
+                                    and len(subset.atoms) >= 2000
+                                )
+                            )
+                            if compact:
+                                part = geometry.native_atoms(subset, rep, color)
+                                part.opacity = opacity
+                                if len(part.spheres) or len(part.cylinders):
+                                    native.append(part)
+                                    cache_size += part.nbytes
                             mesh = geometry.build(
                                 subset.atoms,
                                 subset.coords,
@@ -198,6 +248,8 @@ class Manager:
                                 rep,
                                 quality,
                                 color,
+                                include_atoms=not compact,
+                                budget_bytes=budget - cache_size,
                             )
                             mesh.opacity = opacity
                             if len(mesh.faces):
@@ -220,6 +272,7 @@ class Manager:
                                 background=tuple(
                                     self.cmd.get_color_tuple(self.cmd.get("bg_rgb"))
                                 ),
+                                native=native,
                             )
                         )
                         cache_size += drawings[obj][-1].bounds.nbytes
@@ -228,7 +281,9 @@ class Manager:
                                 "Prepared geometry exceeds cache_mb; lower quality or increase cache_mb"
                             )
                 if (
-                    not any(d.pieces for ds in drawings.values() for d in ds)
+                    not any(
+                        d.pieces or d.native for ds in drawings.values() for d in ds
+                    )
                     and transparency != 1
                 ):
                     raise ValueError("The selected atoms produced no drawable geometry")
@@ -245,6 +300,7 @@ class Manager:
                 owned = set(old.generated) if old else set()
                 for index, frames in enumerate(drawings.values(), 1):
                     generated = [f"{name}_shape_{index}"]
+                    generated.extend(native_groups(frames, f"{name}_atoms_{index}"))
                     if any(p.mesh.opacity < 0.999999 for d in frames for p in d.pieces):
                         generated.append(f"{name}_alpha_{index}")
                     if any(
@@ -260,6 +316,16 @@ class Manager:
                 self.load_entry(candidate)
                 source.hide_reps(self.cmd, saved)
                 self.entries[name] = candidate
+                native_transparency(
+                    self.cmd,
+                    __package__ + ":" + name,
+                    any(
+                        0 < part.opacity < 1
+                        for ds in candidate.drawings.values()
+                        for drawing in ds
+                        for part in drawing.native
+                    ),
+                )
                 candidate.seconds = perf_counter() - start
         except Exception:
             if candidate:
@@ -290,6 +356,7 @@ class Manager:
                     entry = self.entries.pop(key, None)
                     if entry is not None:
                         self.unload_entry(entry)
+                        native_transparency(self.cmd, __package__ + ":" + key, False)
                         if restore:
                             source.restore_reps(self.cmd, entry.saved)
             self.release_gpu()
@@ -353,6 +420,11 @@ class Manager:
                         f"{key}_shape_{i}",
                         f"{key}_alpha_{i}",
                         f"{key}_ray_{i}",
+                        *(
+                            n
+                            for n in entry.native_objects
+                            if n.startswith(f"{key}_atoms_{i}_")
+                        ),
                     ):
                         if target not in names:
                             continue

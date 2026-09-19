@@ -18,6 +18,7 @@ def cuemol_style(
     height=0,
     quiet=0,
     _self=None,
+    atomic_mode="auto",
 ):
     """
     DESCRIPTION
@@ -59,6 +60,8 @@ def cuemol_style(
         edge_color: a PyMOL color name {default: black}
         transparency: keep, or 0 (opaque) to 1 (invisible) {default: keep}
         cache_mb: limit for each mesh and native CGO cache in MiB {default: 2048}
+        atomic_mode: auto, mesh, or native. Auto uses compact PyMOL atoms for
+            large default-material layers; mesh retains custom shader shading.
         filename: required output PNG path for png/ray
         width, height: output pixels; 0 preserves current dimensions
 
@@ -121,6 +124,7 @@ def cuemol_style(
             edge_color,
             None if transparency in ("keep", "", None) else float(transparency),
             cache_mb=float(cache_mb),
+            atomic_mode=str(atomic_mode),
         )
         if not int(quiet):
             states = max(len(ds) for ds in entry.drawings.values())

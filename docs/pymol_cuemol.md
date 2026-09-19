@@ -9,6 +9,40 @@ context. `pixi install` installs the development environment, including
 PyMOL. CueMol and mdtbx are not required. PyMOL's source code and standard
 commands are unchanged.
 
+## Large structures
+
+`atomic_mode=auto` (default) uses compact native PyMOL spheres and split
+cylinders for layers containing at least 2,000 atoms, with the default material
+and no outlines. Polymer ribbons retain their custom geometry. Every selected
+atom, including water, hydrogens, lipids, and ions, remains represented; nothing
+is removed to meet the threshold. Source coordinates, colors, picking, all loaded
+states, refresh, reset, and ordinary ray export remain supported.
+
+Native atoms use PyMOL lighting and transparency rather than the custom material
+shader and its sampled color blending. Use `atomic_mode=mesh` to retain that
+renderer for large atomic layers, or `atomic_mode=native` to request compact atoms
+for a small structure. Custom materials, outlines, and surfaces retain their mesh
+renderers; incompatible explicit native requests raise an error. Native geometry
+and its CGO payload are included in the cache budget. This optimization changes
+the rendering backend, not the selected atoms or the requested sphere/bond radii.
+
+Compact translucent atoms require PyMOL's scene-wide `transparency_mode=3` to avoid expansion into triangle meshes. CueMol and Mol* share this setting while such views are active. Resetting the last compact translucent view restores the previous mode, unless it has since been changed explicitly. Other translucent native objects use the same scene-wide method during that time.
+
+```text
+cuemol_style
+cuemol_style ballstick, atomic_mode=native
+cuemol_style ribbon, atomic_mode=mesh
+```
+
+Measure preparation separately from loading and rendering with a local structure:
+
+```sh
+uv run --no-project --python .pixi/envs/default/bin/python python tests/benchmark_large.py system.gro --output .cache/large-structure.json
+```
+
+The report includes selected atom/state counts, wall time, prepared geometry,
+native payload, and peak process memory. Inputs and reports are not versioned.
+
 ## Quick start
 
 Run `pixi install` in this repository, or install the package into an
